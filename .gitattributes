@@ -1,0 +1,7 @@
+# everything text stays LF — these scripts execute on Linux (WSL/CI);
+# a CRLF shebang fails with exec format errors
+* text=auto eol=lf
+*.png binary
+*.wav binary
+*.dtb binary
+*.img binary
