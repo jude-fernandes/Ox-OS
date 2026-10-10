@@ -64,7 +64,12 @@ believed, and fixed at source, never in the test. Full history:
   next-session checklist). Data volume continues without encryption,
   loudly. **This is the top M2 blocker.**
 - GC: after any big store cleanup run `tools/gc-keep-current.sh`
-  (roots outputs AND drv closures AND kernel sources).
+  (roots outputs AND drv closures AND kernel sources). **Chunk-78
+  lesson: a plain `ln -sfn` into a repo dir is NOT a GC root** — nix
+  only honors /nix/var/nix/profiles and `nix-store --add-root`
+  registrations. The fake roots let the Oct-10 purge delete the whole
+  toolchain (gcc rebuilt from source for hours). Verify with
+  `nix-store --print-roots | grep oxbuild`.
 
 ## Next steps (M2), in order
 
