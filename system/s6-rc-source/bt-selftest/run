@@ -1,0 +1,179 @@
+#!/bin/sh
+# bt-selftest longrun: proves the Bluetooth stack end to end on the
+# virtual controller — modules load, ox-btair (Ox's virtual radio
+# server) attaches TWO controllers to /dev/vhci and answers their H4
+# command streams; both radios power up; one ADVERTISES "Ox-Phone"
+# over raw LE commands and the other's LE scan receives the advert
+# across ox-btair's shared air. Milestones are the gate's surface.
+{
+    # no UI interaction happens during this gate, so nothing else keeps
+    # the device awake — hold a wake lock for the selftest's lifetime
+    # or powerd's idle doze suspends the guest mid-boot. powerd's
+    # socket comes up with the s6 graph, so wait for it first, and
+    # retry until the lock is acknowledged (printed for the gate log).
+    i=0
+    while [ ! -S /run/ox/sockets/powerd.sock ] && [ $i -lt 60 ]; do
+        sleep 1; i=$((i + 1))
+    done
+    n=0
+    while [ $n -lt 10 ]; do
+        OUT=$(/usr/bin/oxctl powerd wake-lock '{"id":"bt-selftest"}' 2>&1)
+        echo "DBG-BT-WAKELOCK $OUT"
+        case "$OUT" in *held*) break ;; esac
+        sleep 5; n=$((n + 1))
+    done
+
+    # modules ship xz-decompressed into /lib/modules
+    i=0
+    while [ ! -e /lib/modules/bluetooth.ko ]; do
+        [ $i -ge 30 ] && break
+        sleep 1; i=$((i + 1))
+    done
+    # dependency order, two passes so any ordering mistake self-heals;
+    # rfkill is usually already up (wifi selftest) — tolerated
+    for pass in 1 2; do
+        for k in rfkill crc16 ecc ecdh_generic bluetooth hci_vhci; do
+            [ -d "/sys/module/$k" ] || /bin/insmod "/lib/modules/$k.ko" 2>/dev/null || true
+        done
+    done
+    i=0
+    while [ ! -e /dev/vhci ]; do
+        [ $i -ge 30 ] && break
+        sleep 1; i=$((i + 1))
+    done
+    [ -e /dev/vhci ] \
+        && echo "OXMILESTONE name=bt-vhci-ok" \
+        || { echo "OXMILESTONE name=bt-failed reason=no-vhci"; exec sleep infinity; }
+
+    # powerd's boot PM selftest does ONE supervised suspend/resume.
+    # Userspace freezes mid-cycle, so any controller attached across it
+    # loses its init (the kernel's 4s command deadline expires while
+    # ox-btair is frozen) and vhci radios are non-persistent.
+    # Wait for the resume milestone before touching the radios — or,
+    # on deterministic boots (ox.pm_drill=off), the drill-skipped
+    # milestone: there is no suspend to wait out. Without the skipped
+    # arm this loop used to burn its full 240s on every deterministic
+    # boot before the first radio was attached.
+    i=0
+    while [ $i -lt 120 ]; do
+        /bin/dmesg 2>/dev/null | grep -q "name=pm-resumed" && break
+        /bin/dmesg 2>/dev/null | grep -q "name=pm-drill-skipped" && break
+        sleep 2; i=$((i + 1))
+    done
+    echo "DBG-BT-PM pm settled after ~$((i * 2))s"
+
+    # ox-btair's watcher uses the loopback for nothing critical, but
+    # keep lo up anyway (radio servers traditionally need it)
+    /bin/ip link set lo up 2>/dev/null || true
+    /bin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+
+    # decisive kernel-side diagnostic: the probe attaches a controller,
+    # answers its auto-init commands with generic Command Completes,
+    # and prints the exchange (validates our framing on the real kernel)
+    echo "DBG-BT-PROBE $(/usr/bin/ox-bt-probe 2>&1 | tr '\n' '|')"
+
+    # one ox-btair process serves both radios. The kernel auto-creates
+    # a controller 1s after /dev/vhci is opened and the vendor packet
+    # must land inside that window; if a pass loses radios, respawn.
+    nhci() { /bin/ls /sys/class/bluetooth 2>/dev/null | grep -c '^hci'; }
+
+    bt_pass=0
+    OK=no
+    while [ $bt_pass -lt 3 ]; do
+        # OX_BTAIR_QUIET: the per-command hex dumps flooded the console
+        # through every gate's boot (wpa_supplicant's ctrl replies
+        # starved mid-storm — see the wifi-gate saga); attach/advert/
+        # error lines stay, the byte dumps stay available without the
+        # var for interactive debugging.
+        OX_BTAIR_QUIET=1 /bin/chrt -f 98 /usr/bin/ox-btair > /dev/console 2>&1 &
+        BTAIR=$!
+        i=0
+        while [ $i -lt 30 ]; do
+            [ "$(nhci)" -ge 2 ] && break
+            sleep 1; i=$((i + 1))
+        done
+        [ "$(nhci)" -ge 2 ] || {
+            echo "DBG-BT-RETRY controllers missing (pass $((bt_pass + 1)))"
+            /bin/kill -9 "$BTAIR" 2>/dev/null
+            i=0
+            while [ $i -lt 10 ] && [ "$(nhci)" -ge 1 ]; do
+                sleep 1; i=$((i + 1))
+            done
+            bt_pass=$((bt_pass + 1))
+            [ $bt_pass -lt 3 ] && continue
+            echo "OXMILESTONE name=bt-failed reason=no-hci"
+            exec sleep infinity
+        }
+
+        CTRL="$(/bin/ls /sys/class/bluetooth 2>/dev/null | grep '^hci' | LC_ALL=C sort)"
+        H1="$(echo "$CTRL" | sed -n 1p)"
+        H2="$(echo "$CTRL" | sed -n 2p)"
+
+        # power both radios; a missing radio means the pass failed —
+        # respawn the pair rather than powering a ghost
+        bt_up() {
+            i=0
+            while [ $i -lt 6 ]; do
+                [ -d "/sys/class/bluetooth/$1" ] || return 1
+                # the kernel may have auto-powered the radio at
+                # registration (EALREADY from HCIDEVUP) — up is up
+                OUT=$(/usr/bin/hciconfig "$1" up 2>&1)
+                RC=$?
+                # hciconfig shows "UP RUNNING" somewhere in its info
+                # output once the kernel has the radio open
+                if /usr/bin/hciconfig "$1" 2>&1 | grep -q "UP"; then
+                    return 0
+                fi
+                echo "DBG-BT-UP $1 rc=$RC: $OUT"
+                echo "DBG-BT-INFO $(/usr/bin/hciconfig -a "$1" 2>&1 | head -6 | tr '\n' '|')"
+                sleep 5; i=$((i + 1))
+            done
+            return 1
+        }
+        if bt_up "$H1" && bt_up "$H2"; then
+            OK=yes
+            break
+        fi
+        echo "DBG-BT-PASS pass $((bt_pass + 1)) lost a radio; respawning pair"
+        echo "DBG-BT-DMESG $(/bin/dmesg 2>/dev/null | grep -ai 'bluetooth\|vhci' | tail -4 | tr '\n' '|')"
+        /bin/kill -9 "$BTAIR" 2>/dev/null
+        i=0
+        while [ $i -lt 10 ] && [ "$(nhci)" -ge 1 ]; do
+            sleep 1; i=$((i + 1))
+        done
+        bt_pass=$((bt_pass + 1))
+    done
+    [ "$OK" = yes ] \
+        && echo "OXMILESTONE name=bt-controllers-up h1=$H1 h2=$H2" \
+        || { echo "OXMILESTONE name=bt-failed reason=no-hci"; exec sleep infinity; }
+
+    if /usr/bin/hciconfig "$H1" name "Ox-Phone" 2>&1; then
+        echo "OXMILESTONE name=bt-named"
+    else
+        echo "OXMILESTONE name=bt-failed reason=name"; exec sleep infinity
+    fi
+    echo "DBG-BT-CONFIG $(/usr/bin/hciconfig "$H1" 2>&1 | tr '\n' '|')"
+
+    # $H2 advertises: LE Set Adv Param (100ms ADV_IND), adv data
+    # (flags + full name "Ox-Phone"), advertise on
+    /usr/bin/hcitool -i "$H2" cmd 0x08 0x0006 a0 00 a0 00 00 00 00 00 00 00 00 00 00 07 00 >/dev/console 2>&1
+    /usr/bin/hcitool -i "$H2" cmd 0x08 0x0008 0d 02 01 06 09 09 4f 78 2d 50 68 6f 6e 65 >/dev/console 2>&1
+    /usr/bin/hcitool -i "$H2" cmd 0x08 0x000a 01 >/dev/console 2>&1
+    sleep 1
+
+    # $H1 scans: the advert must cross the shared air and surface as
+    # an LE advertising report on a real HCI socket. hcitool lescan's
+    # stdout is block-buffered when piped and timeout's SIGTERM loses
+    # whatever it printed, so the assertion uses ox-bt-probe scan,
+    # which does the same raw-HCI dance but flushes per line and
+    # exits cleanly.
+    OUT=$(/usr/bin/ox-bt-probe scan "$H1" 6 2>&1)
+    echo "DBG-BTSCAN $OUT"
+    case "$OUT" in
+        *"ADV "*) echo "OXMILESTONE name=bt-discovery-found addr=$(echo "$OUT" | grep -o '[0-9A-F:]\{17\}' | head -1)" ;;
+        *) echo "OXMILESTONE name=bt-discovery-none" ;;
+    esac
+    /usr/bin/hcitool -i "$H2" cmd 0x08 0x000a 00 >/dev/console 2>&1
+    echo "OXMILESTONE name=bt-stack-ok"
+    exec sleep infinity
+} > /dev/console 2>&1

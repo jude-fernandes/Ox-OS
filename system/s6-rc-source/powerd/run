@@ -1,0 +1,26 @@
+#!/bin/sh
+# powerd longrun: suspend path + resume accounting.
+# The boot self-test performs one supervised suspend/resume cycle so the
+# pm gate proves the kernel path on every CI run. No-op (sleep) when the
+# guest binary is absent.
+#
+# Deterministic-boot switch: `ox.pm_drill=off` on the kernel cmdline
+# (gates set OX_KERNEL_EXTRA) skips BOTH the suspend drill and the idle
+# doze — other gates' boots must not freeze mid-flow on power events.
+# The PM behavior stays gated by the dedicated PM gates, which boot
+# WITHOUT the flag.
+if [ -x /usr/bin/powerd ]; then
+    if grep -q 'ox.pm_drill=off' /proc/cmdline 2>/dev/null; then
+        /usr/bin/powerd --no-pm
+        RC=$?
+        echo "<6>powerd: exited rc=$RC" > /dev/kmsg 2>/dev/null || true
+        exit "$RC"
+    fi
+    # Idle autosuspend stays on, but the dev target gets a generous window:
+    # the paydemo flow waits on a scripted "user" and must not lose the race.
+    OX_IDLE_TIMEOUT_SECS=300 OX_PM_SELFTEST=1 /usr/bin/powerd
+    RC=$?
+    echo "<6>powerd: exited rc=$RC" > /dev/kmsg 2>/dev/null || true
+    exit "$RC"
+fi
+exec sleep infinity

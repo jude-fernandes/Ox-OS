@@ -1,0 +1,10 @@
+[package]
+name = "ox-sms"
+version = "0.1.0"
+edition = "2021"
+description = "Ox OS Messaging app v1: compose + send over oxmodemd's permission-checked sms-send (permstored telephony.sms)"
+
+[dependencies]
+ox-ipc = { workspace = true }
+ox-ui = { workspace = true }
+serde_json = { workspace = true }

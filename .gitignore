@@ -1,0 +1,15 @@
+# build junk
+result
+result-*
+*.tgz
+*.tar.gz
+*.log
+*.img
+*.cpio.gz
+nul
+devnull
+# one-off scratch scripts
+patch_shared*.py
+# editor
+*.swp
+*~

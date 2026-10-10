@@ -1,0 +1,88 @@
+#!/bin/sh
+# nfc-selftest longrun: the permission layer over the NFC stack.
+# 0. the honest idle leg: reader up, NO tag presented -> nfc-no-tag
+# 1. the gate presents a tag; the daemon must read it (nfc-tag-read)
+# 2. nfc.read DENY  -> `last` REFUSED (radio data stays in the daemon)
+# 3. nfc.read FAKE  -> clearly synthetic tag, and the REAL tag text
+#    must NOT leak into the response
+# 4. nfc.read GRANT -> the REAL tag verbatim (uid + text, synthetic:
+#    false). Deny is restored afterwards (least privilege).
+{
+    sleep 8
+    i=0
+    while [ ! -S /run/ox/sockets/nfcd.sock ] || [ ! -S /run/ox/sockets/permstored.sock ]; do
+        [ $i -ge 120 ] && break
+        sleep 1; i=$((i + 1))
+    done
+    if [ ! -S /run/ox/sockets/nfcd.sock ] || [ ! -S /run/ox/sockets/permstored.sock ]; then
+        echo "OXMILESTONE name=nfc-test-failed reason=no-sockets"
+        exec sleep infinity
+    fi
+
+    # honest idle leg: the reader reports no tag in range
+    i=0
+    while [ $i -lt 120 ]; do
+        /bin/dmesg 2>/dev/null | grep -q "name=nfc-no-tag" && break
+        sleep 2; i=$((i + 1))
+    done
+    /bin/dmesg 2>/dev/null | grep -q "name=nfc-no-tag" \
+        || { echo "OXMILESTONE name=nfc-test-failed reason=no-idle-leg"; exec sleep infinity; }
+
+    # the gate presents the tag once the idle leg is up; wait for the
+    # daemon to read it (checksummed frame -> parsed -> stored)
+    i=0
+    while [ $i -lt 300 ]; do
+        /bin/dmesg 2>/dev/null | grep -q "name=nfc-tag-read" && break
+        sleep 2; i=$((i + 1))
+    done
+    /bin/dmesg 2>/dev/null | grep -q "name=nfc-tag-read" \
+        || { echo "OXMILESTONE name=nfc-test-failed reason=no-tag-read"; exec sleep infinity; }
+
+    L() {
+        /usr/bin/oxctl nfcd last '{"app":"oxctl"}' 2>&1
+    }
+
+    # DENY
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"nfc.read","mode":"deny"}' >/dev/null 2>&1
+    D=$(L)
+    echo "DBG-NFC-DENY $D"
+    case "$D" in
+        *denied*|*DENIED*) echo "OXMILESTONE name=nfc-denied-refused" ;;
+        *) echo "OXMILESTONE name=nfc-test-failed reason=deny-leak"; exec sleep infinity ;;
+    esac
+
+    # FAKE: synthetic answer, and the real text must not leak
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"nfc.read","mode":"fake"}' >/dev/null 2>&1
+    F=$(L)
+    echo "DBG-NFC-FAKE $F"
+    case "$F" in
+        *'"synthetic":true'*) ;;
+        *) echo "OXMILESTONE name=nfc-test-failed reason=fake-not-synthetic"; exec sleep infinity ;;
+    esac
+    case "$F" in
+        *'boarding'*) echo "OXMILESTONE name=nfc-test-failed reason=fake-leak"; exec sleep infinity ;;
+    esac
+    echo "OXMILESTONE name=nfc-fake-synthetic"
+
+    # GRANT: the real tag verbatim
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"nfc.read","mode":"grant"}' >/dev/null 2>&1
+    G=$(L)
+    echo "DBG-NFC-GRANT $G"
+    case "$G" in
+        *'"synthetic":false'*) ;;
+        *) echo "OXMILESTONE name=nfc-test-failed reason=grant-synthetic"; exec sleep infinity ;;
+    esac
+    case "$G" in
+        *'04a2b3c4d5e6'*) ;;
+        *) echo "OXMILESTONE name=nfc-test-failed reason=grant-uid"; exec sleep infinity ;;
+    esac
+    case "$G" in
+        *'boarding'*) ;;
+        *) echo "OXMILESTONE name=nfc-test-failed reason=grant-text"; exec sleep infinity ;;
+    esac
+    echo "OXMILESTONE name=nfc-real-tag-ok"
+
+    # restore deny (least privilege)
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"nfc.read","mode":"deny"}' >/dev/null 2>&1
+    exec sleep infinity
+} > /dev/console 2>&1

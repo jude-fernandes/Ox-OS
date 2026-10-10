@@ -1,0 +1,8 @@
+#!/bin/sh
+# gnssd longrun: the GNSS service — owns the virtual GNSS receiver
+# ("oxgnss.0" virtio-serial port), parses its NMEA stream and publishes
+# the last-known fix to /data/ox/location.json for ox-locationd's
+# grant mode. If the receiver is absent (boots without the port) the
+# daemon stays up serving IPC with an honest no-fix instead of
+# flapping under the supervisor (same rule as oxmodemd).
+exec /usr/bin/ox-gnssd

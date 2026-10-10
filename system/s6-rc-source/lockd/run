@@ -1,0 +1,5 @@
+#!/bin/sh
+# lockd longrun: owns the device lock secret. The shell verifies
+# through it (fail closed), Settings enrolls through it. The PIN store
+# has exactly one writer: this daemon.
+exec /usr/bin/ox-lockd

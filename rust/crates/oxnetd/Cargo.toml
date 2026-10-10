@@ -1,0 +1,9 @@
+[package]
+name = "oxnetd"
+version = "0.1.0"
+edition = "2021"
+description = "Ox OS network daemon: interface bring-up, DNS forwarder with egress journal, per-name policy"
+
+[dependencies]
+ox-ipc = { workspace = true }
+serde_json = { workspace = true }

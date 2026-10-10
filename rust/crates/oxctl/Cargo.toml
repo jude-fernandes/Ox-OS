@@ -1,0 +1,9 @@
+[package]
+name = "oxctl"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ox-ipc = { path = "../ox-ipc" }
+ox-pay-proto = { path = "../ox-pay-proto" }
+serde_json = "1"

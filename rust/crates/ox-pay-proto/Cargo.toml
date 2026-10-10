@@ -1,0 +1,8 @@
+[package]
+name = "ox-pay-proto"
+version = "0.1.0"
+edition = "2021"
+description = "Ox OS payment protocol layer: SHA-256/HMAC, BER-TLV, ISO 7816-4 APDUs, NDEF, HCE mini-kernel"
+
+[dependencies]
+serde = { workspace = true }

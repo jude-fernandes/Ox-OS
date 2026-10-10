@@ -1,0 +1,5 @@
+#!/bin/sh
+# resourced longrun: zram swap setup, PSI/memory pressure tiers
+# (warn -> drop caches, pressure -> compact, critical -> protected OOM
+# kill). Milestones: resourced-zram-ok, resourced-ready.
+exec /usr/bin/oxresourced

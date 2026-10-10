@@ -1,0 +1,91 @@
+# Ox OS — self-verifying CI (free GitHub runners, no KVM needed).
+#
+# Builds the 4-target fleet and runs the two composite boot gates in
+# QEMU TCG. The gates were written for the WSL build box (/root/oxbuild,
+# per-user-root nix profile); the setup steps below reproduce those
+# paths on the runner so the scripts run unmodified.
+#
+# Requirements: repo root == the flake (what lives in /root/oxbuild).
+# Public repo => unlimited free minutes. The full job is ~1.5-2h TCG;
+# the 6h job cap holds.
+
+name: ox-ci
+on:
+  push:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 4 * * 1" # weekly proof-of-life, Mondays 04:00 UTC
+
+jobs:
+  build-and-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Free disk space (nix store closures are big)
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet \
+                      /opt/ghc /usr/local/.ghc \
+                      /opt/hostedtoolcache/Code \
+                      /usr/local/share/boost || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h /
+
+      - uses: actions/checkout@v4
+
+      - name: Reproduce the build-box layout (/root/oxbuild)
+        run: |
+          sudo mkdir -p /root
+          sudo ln -sfn "$GITHUB_WORKSPACE" /root/oxbuild
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-24.11
+          extra_nix_config: |
+            cores = 2
+            max-jobs = 1
+
+      - name: Root-profile nix symlink (gates hardcode the root profile)
+        run: |
+          NX=$(dirname "$(dirname "$(command -v nix)")")
+          sudo mkdir -p /nix/var/nix/profiles/per-user
+          sudo ln -sfn "$(ls -d /nix/var/nix/profiles/per-user/*/ | grep -v root | head -1 | sed 's:/$::')" \
+                       /nix/var/nix/profiles/per-user/root || true
+          # install-nix-action puts the profile per-user; make 'root' resolve
+          if [ ! -e /nix/var/nix/profiles/per-user/root/profile/bin/nix ]; then
+            P=$(ls -d /nix/var/nix/profiles/per-user/*/profile 2>/dev/null | head -1)
+            sudo mkdir -p /nix/var/nix/profiles/per-user/root
+            sudo ln -sfn "$P" /nix/var/nix/profiles/per-user/root/profile
+          fi
+          /nix/var/nix/profiles/per-user/root/profile/bin/nix --version
+
+      - name: Build the fleet (4 targets + qemu kernel/payload)
+        run: |
+          cd /root/oxbuild
+          N=/nix/var/nix/profiles/per-user/root/profile/bin/nix
+          $N build \
+            .#image-pinephone-pro .#image-fairphone5 \
+            .#image-oneplus9rt-sm8350 .#image-oneplus10pro-sm8450 \
+            .#kernel-qemu .#payload-qemu \
+            --no-link --print-out-paths 2>&1 | tee /tmp/nixout.txt
+
+      - name: Boot gate — A/B slot lifecycle (slotboot)
+        run: |
+          cd /root/oxbuild
+          sudo -E bash tools/target-slotboot-gate-run.sh 2>&1 | tee /tmp/slotboot.log
+          grep -q "SLOT-BOOT TARGET GATE ALL GREEN" /tmp/slotboot.log
+
+      - name: Boot gate — flash-pack + enrollment
+        run: |
+          cd /root/oxbuild
+          sudo -E bash tools/target-flashpack-gate-run.sh 2>&1 | tee /tmp/flashpack.log
+          grep -q "FLASHPACK TARGET GATE ALL GREEN" /tmp/flashpack.log
+
+      - name: Upload gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-logs
+          path: |
+            /tmp/slotboot.log
+            /tmp/flashpack.log
+          if-no-files-found: ignore

@@ -1,0 +1,8 @@
+# Ox OS firmware manifest — @DEVICE@ (fill from stock OTA extraction)
+# Policy: hash-pinned blobs, loaded only by the device needing them.
+# Format: <path-in-firmware-tree>  <sha256>
+# Modem/WiFi/BT/DSP blobs land under /lib/firmware/qca|qcom/... at image
+# assembly; absence must degrade gracefully (no boot failure).
+# EXAMPLES (replace with real hashes after OTA extraction):
+# qcom/soc0/modem.mbn   e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+# qca/wlanmdsp.mbn      e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

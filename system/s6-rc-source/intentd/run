@@ -1,0 +1,4 @@
+#!/bin/sh
+# intentd longrun: app lifecycle daemon. Owns app start/stop over IPC —
+# the shell never spawns apps directly (intents, not forks).
+exec /usr/bin/ox-intentd

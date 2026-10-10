@@ -1,0 +1,22 @@
+#!/bin/sh
+# udev longrun: eudev daemon. PipeWire's ALSA enumerator (spa
+# api.alsa.enum.udev) skips every sound device until udev has applied
+# its rules and recorded the ENV properties — SOUND_INITIALIZED comes
+# from 78-sound-card.rules — so a boot-time warmplug here is what makes
+# dynamic audio discovery work without a full init system.
+{
+    mkdir -p /run/udev /var/lib/udev
+    /usr/bin/udevd --daemon
+    # Warmplug sound devices that existed before the daemon started
+    # (all of them, at boot) so rules run and the db fills.
+    /usr/bin/udevadm trigger --action=change --subsystem-match=sound
+    /usr/bin/udevadm settle --timeout=15
+    if [ -d /run/udev/data ] && [ -n "$(ls /run/udev/data 2>/dev/null)" ]; then
+        echo "OXMILESTONE name=udev-ready"
+    else
+        echo "OXMILESTONE name=udev-empty"
+    fi
+    # Park: the daemon itself is detached; keep the supervised service
+    # alive (R-26 longrun shape).
+    while :; do sleep 3600; done
+} > /dev/console 2>&1

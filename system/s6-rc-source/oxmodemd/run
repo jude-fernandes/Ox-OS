@@ -1,0 +1,7 @@
+#!/bin/sh
+# oxmodemd longrun: the modem service — owns the radio chardev ("modem
+# slot") and the AT engine; every radio command is journaled to kmsg
+# (egress visibility, charter). If the slot is absent (boots without
+# virtio-serial attached) the daemon stays up serving IPC with
+# transport="missing" instead of flapping under the supervisor.
+exec /usr/bin/oxmodemd

@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# OnePlus 9RT (SM8350): package the Ox payload for the Android chain.
+# Header v2: the board FDT is EMBEDDED in the boot image (no dtbo).
+# Produces: boot.img (AVB hash footer) + vbmeta.img (chain root) +
+# avb-pkmd.bin (the re-lock enrollment value).
+# usage: boot.pack <Image> <initramfs.cpio.gz> <dtb> [outdir]
+set -eu
+SELF="$(cd "$(dirname "$0")" && pwd)"
+. "$SELF/target.env"
+MKBOOT="$SELF/../../tools/ox-mkbootimg.py"
+AVB="$SELF/../../tools/aosp/avbtool.py"
+KEY="${OX_AVB_KEY:-$SELF/../../tools/dev-keys/avb-dev.pem}"
+K="$1"; R="$2"; D="$3"; OUT="${4:-.}"
+mkdir -p "$OUT"
+for f in "$KEY" "$K" "$R" "$D"; do
+    [ -f "$f" ] || { echo "FATAL: missing $f" >&2; exit 4; }
+done
+
+# 1) boot image v2 with the embedded dtb; kernel gzipped (ABL expands)
+gzip -9c "$K" > "$OUT/.kernel.gz"
+# shellcheck disable=SC2086
+python3 "$MKBOOT" --kernel "$OUT/.kernel.gz" --ramdisk "$R" --dtb "$D" \
+    --board oxos --pagesize "$OX_BOOT_PAGESIZE" --base "$OX_BOOT_BASE" \
+    --kernel-offset "$OX_BOOT_KERNEL_OFFSET" \
+    --ramdisk-offset "$OX_BOOT_RAMDISK_OFFSET" \
+    --tags-offset "$OX_BOOT_TAGS_OFFSET" \
+    --dtb-offset "$OX_BOOT_DTB_OFFSET" \
+    --cmdline "$OX_CMDLINE" --header-version "$OX_BOOT_HEADER_VERSION" \
+    -o "$OUT/boot.img"
+rm -f "$OUT/.kernel.gz"
+python3 "$MKBOOT" --verify --output "$OUT/boot.img"
+
+# 2) AVB: hash footer under the dev key + the vbmeta chain root
+PART_SIZE=67108864   # boot_a 64M (BRINGUP)
+python3 "$AVB" add_hash_footer --image "$OUT/boot.img" \
+    --partition_name boot --partition_size "$PART_SIZE" \
+    --key "$KEY" --algorithm SHA256_RSA4096
+python3 "$AVB" extract_public_key --key "$KEY" --output "$OUT/avb-boot.pk"
+python3 "$AVB" make_vbmeta_image \
+    --chain_partition "boot:1:$OUT/avb-boot.pk" \
+    --key "$KEY" --algorithm SHA256_RSA4096 \
+    --output "$OUT/vbmeta.img"
+sha256sum "$OUT/avb-boot.pk" | cut -d' ' -f1 > "$OUT/avb-pkmd.bin"
+
+echo "artifacts in $OUT: boot.img vbmeta.img avb-pkmd.bin"
+echo "flash: fastboot flash boot $OUT/boot.img"
+echo "       fastboot flash vbmeta $OUT/vbmeta.img"

@@ -1,0 +1,6 @@
+#!/bin/sh
+# usbd longrun: the USB service — watches the bus and QUARANTINES
+# every device by default (kernel authorized=0: drivers unbound, no
+# block devices, no input) until explicitly authorized. A plugged
+# cable charges and enumerates; it does not get access.
+exec /usr/bin/ox-usbd

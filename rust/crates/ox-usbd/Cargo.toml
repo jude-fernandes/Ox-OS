@@ -1,0 +1,9 @@
+[package]
+name = "ox-usbd"
+version = "0.1.0"
+edition = "2021"
+description = "Ox OS USB daemon: watches the USB bus, quarantines new devices by default (authorized=0), serves the device list behind permstored usb.read"
+
+[dependencies]
+ox-ipc = { workspace = true }
+serde_json = { workspace = true }

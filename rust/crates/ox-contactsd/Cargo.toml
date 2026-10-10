@@ -1,0 +1,9 @@
+[package]
+name = "ox-contactsd"
+version = "0.1.0"
+edition = "2021"
+description = "Ox OS contacts service: real store on grant, synthetic data on fake, refused on deny"
+
+[dependencies]
+ox-ipc = { workspace = true }
+serde_json = { workspace = true }

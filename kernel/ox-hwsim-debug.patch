@@ -1,0 +1,53 @@
+--- a/drivers/net/wireless/virtual/mac80211_hwsim.c
++++ b/drivers/net/wireless/virtual/mac80211_hwsim.c
+@@ -55,6 +55,9 @@
+ 
+ static bool paged_rx = false;
+ module_param(paged_rx, bool, 0644);
++static bool ox_debug_unicast = false;
++module_param(ox_debug_unicast, bool, 0644);
++MODULE_PARM_DESC(ox_debug_unicast, "Ox dev: log unicast delivery skip reasons");
+ MODULE_PARM_DESC(paged_rx, "Use paged SKBs for RX instead of linear ones");
+ 
+ static bool rctbl = false;
+@@ -1839,6 +1842,9 @@
+ 	}
+ 
+ 	/* Copy skb to all enabled radios that are on the current frequency */
++	if (ox_debug_unicast && !is_multicast_ether_addr(hdr->addr1))
++		printk(KERN_INFO "hwsim-dbg: tx uni radio=%d chan=%u dst=%pM\n",
++		       data->idx, chan ? chan->center_freq : 0, hdr->addr1);
+ 	spin_lock(&hwsim_radio_lock);
+ 	list_for_each_entry(data2, &hwsim_radios, list) {
+ 		struct sk_buff *nskb;
+@@ -1851,8 +1857,13 @@
+ 			continue;
+ 
+ 		if (!data2->started || (data2->idle && !data2->tmp_chan) ||
+-		    !hwsim_ps_rx_ok(data2, skb))
++		    !hwsim_ps_rx_ok(data2, skb)) {
++			if (ox_debug_unicast && !is_multicast_ether_addr(hdr->addr1))
++				printk(KERN_INFO "hwsim-dbg: skip radio idx=%d started=%d idle=%d tmp=%d ps=%d\n",
++				       data2->idx, data2->started, data2->idle,
++				       !!data2->tmp_chan, hwsim_ps_rx_ok(data2, skb));
+ 			continue;
++		}
+ 
+ 		if (!(data->group & data2->group))
+ 			continue;
+@@ -1865,8 +1876,14 @@
+ 			ieee80211_iterate_active_interfaces_atomic(
+ 				data2->hw, IEEE80211_IFACE_ITER_NORMAL,
+ 				mac80211_hwsim_tx_iter, &tx_iter_data);
+-			if (!tx_iter_data.receive)
++			if (!tx_iter_data.receive) {
++				if (ox_debug_unicast && !is_multicast_ether_addr(hdr->addr1))
++					printk(KERN_INFO "hwsim-dbg: chan-miss idx=%d chan=%u rx0=%u rx1=%u\n",
++				       data2->idx, chan ? chan->center_freq : 0,
++				       data2->channel ? data2->channel->center_freq : 0,
++				       data2->tmp_chan ? data2->tmp_chan->center_freq : 0);
+ 				continue;
++			}
+ 		}
+ 
+ 		/*

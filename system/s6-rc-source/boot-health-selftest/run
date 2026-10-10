@@ -1,0 +1,38 @@
+#!/bin/sh
+# boot-health-selftest longrun (chunk 67): at boot+settle, assert EVERY
+# core daemon is serving. This is the closed evidence loop for the
+# "missing daemon" flake class (run-4b's camera-app boot lost powerd;
+# run-5's bt log was unusable): a boot where a daemon is gone now
+# journals a NAMED missing entry instead of a mysteriously absent
+# pattern. The gate waits for this milestone and refuses any missing.
+#
+# The manifest: every Ox service that owns a socket under
+# /run/ox/sockets (the tree's serve convention). ox-shell/ox-status are
+# clients (no socket); hostapd/wpa_supplicant are radio daemons with
+# their own gates; resourced/thermald/netd use their name; the
+# non-socket extras (stage2/milestone-fs/getty/udev) are phase-1.
+{
+    echo "DBG-BOOTHEALTH-START pid=$$"
+    # settle: the slowest daemons come up well inside 150s even under
+    # TCG load (grids/gates historically see full service by ~120s).
+    i=0
+    while [ $i -lt 150 ]; do
+        [ -S /run/ox/sockets/oxcom.sock ] && [ -S /run/ox/sockets/lockd.sock ] && break
+        sleep 2; i=$((i + 1))
+    done
+    sleep 10
+    MANIFEST="camerad contactsd gnssd intentd locationd lockd messagesd netd nfcd notifd oxcom oxmodemd oxwifid paymentsd permstored powerd resourced thermald usbd"
+    MISSING=""
+    for d in $MANIFEST; do
+        if [ ! -S "/run/ox/sockets/$d.sock" ]; then
+            MISSING="$MISSING $d"
+            echo "OXMILESTONE name=boot-daemon-down daemon=$d"
+        fi
+    done
+    case "$MISSING" in
+        "") echo "OXMILESTONE name=boot-health missing=none" ;;
+        *)  echo "OXMILESTONE name=boot-health missing=$MISSING" ;;
+    esac
+    echo "DBG-BOOTHEALTH-DONE"
+    exec sleep infinity
+} > /dev/console 2>&1

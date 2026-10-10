@@ -1,0 +1,48 @@
+#!/bin/sh
+# modem-selftest longrun: exercises the modem service through its ONLY
+# supported surface — the oxmodemd IPC socket (the daemon is the single
+# owner of the radio port; a second opener would steal responses).
+# Waits for the transport, refreshes status, sends one SMS via the
+# policy layer, and reports milestones for the gate.
+{
+    # The daemon binds IPC as soon as it starts; the transport comes up
+    # in its background thread (oxmodemd-up in kmsg when it lands).
+    i=0
+    while [ ! -S /run/ox/sockets/oxmodemd.sock ] && [ $i -lt 30 ]; do
+        sleep 1; i=$((i + 1))
+    done
+    [ -S /run/ox/sockets/oxmodemd.sock ] || {
+        echo "OXMILESTONE name=oxmodemd-status-failed"
+        exec sleep infinity
+    }
+    # status/refresh: identity + SIM + signal through the AT engine.
+    OUT=$(/usr/bin/oxctl oxmodemd refresh 2>&1)
+    echo "DBG-OXMODEMD=$OUT"
+    case "$OUT" in
+        *EG25-G*) echo "OXMILESTONE name=oxmodemd-status-ok" ;;
+        *) echo "OXMILESTONE name=oxmodemd-status-failed" ;;
+    esac
+    # SMS send (two-phase CMGS behind the IPC policy layer; raw
+    # AT+CMGS stays refused by design). Chunk 68: every caller consults
+    # permstored by its kernel comm — the selftest's caller is oxctl,
+    # so the grant seeds oxctl telephony.sms first.
+    i=0
+    while [ ! -S /run/ox/sockets/permstored.sock ] && [ $i -lt 30 ]; do
+        sleep 1; i=$((i + 1))
+    done
+    [ -S /run/ox/sockets/permstored.sock ] || {
+        echo "OXMILESTONE name=modem-sms-failed"
+        exec sleep infinity
+    }
+    G=$(/usr/bin/oxctl permstored set '{"app":"oxctl","permission":"telephony.sms","mode":"grant"}' 2>&1)
+    echo "DBG-SMS-GRANT=$G"
+    S1=$(/usr/bin/oxctl oxmodemd sms-send '{"to":"+15550001","text":"ox-sms-test"}' 2>&1)
+    echo "DBG-SMS=$S1"
+    case "$S1" in
+        *'"to":"+15550001"'*) echo "OXMILESTONE name=modem-sms-ok" ;;
+        *) echo "OXMILESTONE name=modem-sms-failed" ;;
+    esac
+    # restore deny (least privilege)
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"telephony.sms","mode":"deny"}' >/dev/null 2>&1
+    exec sleep infinity
+} > /dev/console 2>&1

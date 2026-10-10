@@ -1,0 +1,10 @@
+[package]
+name = "ox-camera"
+version = "0.1.0"
+edition = "2021"
+description = "Ox OS Camera app v1: live viewfinder + shutter over ox-camerad, honest-permission states"
+
+[dependencies]
+ox-ipc = { workspace = true }
+ox-ui = { workspace = true }
+serde_json = { workspace = true }

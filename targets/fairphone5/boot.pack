@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Fairphone 5: package the Ox payload for the Android boot chain (ABL).
+# Produces:
+#   boot.img    — Android boot image v4 (kernel + initramfs), AVB hash
+#                 footer signed under the dev key
+#   dtbo.img    — dt_table image carrying the board FDT, AVB signed
+#   vbmeta.img  — the vbmeta root: chain descriptors -> boot/dtbo keys
+#   avb-pkmd.bin— sha256(extracted public key) = the value enrolled at
+#                 bootloader re-lock (vendor fastboot flow, BRINGUP M1)
+# Usage: boot.pack <Image> <initramfs.cpio.gz> <dtb> [outdir]
+# The kernel is gzipped for ABL (the v4 boot image carries raw blobs;
+# ABL/gzip-boot handles Image.gz).
+set -eu
+SELF="$(cd "$(dirname "$0")" && pwd)"
+. "$SELF/target.env"
+MKBOOT="$SELF/../../tools/ox-mkbootimg.py"
+MKDTBO="$SELF/../../tools/ox-mkdtbo.py"
+AVB="$SELF/../../tools/aosp/avbtool.py"
+KEYDIR="${OX_AVB_KEY_DIR:-$SELF/../../tools/dev-keys}"
+KEY="$KEYDIR/avb-dev.pem"
+K="$1"; R="$2"; D="$3"; OUT="${4:-.}"
+mkdir -p "$OUT"
+
+for f in "$KEY" "$K" "$R" "$D"; do
+    [ -f "$f" ] || { echo "FATAL: missing $f" >&2; exit 4; }
+done
+
+# 1) boot image v4 (no dtb field — the board FDT ships via dtbo)
+gzip -9c "$K" > "$OUT/.kernel.gz"
+python3 "$MKBOOT" --kernel "$OUT/.kernel.gz" --ramdisk "$R" \
+    --header-version "$OX_BOOT_HEADER_VERSION" \
+    --pagesize "$OX_BOOT_PAGESIZE" \
+    --cmdline "$OX_CMDLINE" \
+    -o "$OUT/boot.img"
+rm -f "$OUT/.kernel.gz"
+python3 "$MKBOOT" --verify --output "$OUT/boot.img"
+
+# 2) dtbo image (mainline ships full dtbs; packed as dt_table entry 0 —
+#    per-board overlay selection is M1)
+python3 "$MKDTBO" --dtb "$D" --id 0 -o "$OUT/dtbo.img"
+python3 "$MKDTBO" --verify --output "$OUT/dtbo.img"
+
+# 3) AVB: hash footers under the dev key, then the vbmeta root chaining
+#    both partitions (the shape the FP5 ABL reads)
+python3 "$AVB" add_hash_footer --image "$OUT/boot.img" \
+    --partition_name boot --partition_size "$OX_AVB_BOOT_PARTITION_SIZE" \
+    --key "$KEY" --algorithm "$OX_AVB_ALGORITHM"
+python3 "$AVB" add_hash_footer --image "$OUT/dtbo.img" \
+    --partition_name dtbo --partition_size "$OX_AVB_DTBO_PARTITION_SIZE" \
+    --key "$KEY" --algorithm "$OX_AVB_ALGORITHM"
+python3 "$AVB" extract_public_key --key "$KEY" \
+    --output "$OUT/avb-boot.pk"
+python3 "$AVB" extract_public_key --key "$KEY" \
+    --output "$OUT/avb-dtbo.pk"
+python3 "$AVB" make_vbmeta_image \
+    --chain_partition "boot:1:$OUT/avb-boot.pk" \
+    --chain_partition "dtbo:2:$OUT/avb-dtbo.pk" \
+    --key "$KEY" --algorithm "$OX_AVB_ALGORITHM" \
+    --output "$OUT/vbmeta.img"
+# the re-lock enrollment value: sha256 over the extracted public key
+sha256sum "$OUT/avb-boot.pk" | cut -d' ' -f1 > "$OUT/avb-pkmd.bin"
+
+echo "artifacts in $OUT: boot.img dtbo.img vbmeta.img avb-pkmd.bin"
+echo "flash: fastboot flash boot $OUT/boot.img"
+echo "       fastboot flash dtbo $OUT/dtbo.img"
+echo "       fastboot flash vbmeta $OUT/vbmeta.img"
+echo "       (re-lock enrolls sha256(boot pk): $(cat "$OUT/avb-pkmd.bin"))"

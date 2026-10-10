@@ -1,0 +1,42 @@
+--- a/net/mac80211/mlme.c
++++ b/net/mac80211/mlme.c
+@@ -33,16 +33,33 @@
+ 
+ #include <kunit/static_stub.h>
+ 
+-#define IEEE80211_AUTH_TIMEOUT		(HZ / 5)
+-#define IEEE80211_AUTH_TIMEOUT_LONG	(HZ / 2)
+-#define IEEE80211_AUTH_TIMEOUT_SHORT	(HZ / 10)
++/* Ox lab: TCG emulation stalls (drop_caches, tmpfs pressure drills)
++ * routinely exceed the fixed 200ms/100ms auth/assoc response
++ * windows, so the six response timeouts below are module params
++ * (jiffies). Defaults are byte-identical to the upstream constants;
++ * Ox lab boots raise them on the kernel cmdline. */
++static unsigned int ox_auth_timeout = HZ / 5;
++module_param(ox_auth_timeout, uint, 0644);
++static unsigned int ox_auth_timeout_long = HZ / 2;
++module_param(ox_auth_timeout_long, uint, 0644);
++static unsigned int ox_auth_timeout_short = HZ / 10;
++module_param(ox_auth_timeout_short, uint, 0644);
++static unsigned int ox_assoc_timeout = HZ / 5;
++module_param(ox_assoc_timeout, uint, 0644);
++static unsigned int ox_assoc_timeout_long = HZ / 2;
++module_param(ox_assoc_timeout_long, uint, 0644);
++static unsigned int ox_assoc_timeout_short = HZ / 10;
++module_param(ox_assoc_timeout_short, uint, 0644);
++#define IEEE80211_AUTH_TIMEOUT		(ox_auth_timeout)
++#define IEEE80211_AUTH_TIMEOUT_LONG	(ox_auth_timeout_long)
++#define IEEE80211_AUTH_TIMEOUT_SHORT	(ox_auth_timeout_short)
+ #define IEEE80211_AUTH_TIMEOUT_SAE	(HZ * 2)
+ #define IEEE80211_AUTH_MAX_TRIES	3
+ #define IEEE80211_AUTH_WAIT_ASSOC	(HZ * 5)
+ #define IEEE80211_AUTH_WAIT_SAE_RETRY	(HZ * 2)
+-#define IEEE80211_ASSOC_TIMEOUT		(HZ / 5)
+-#define IEEE80211_ASSOC_TIMEOUT_LONG	(HZ / 2)
+-#define IEEE80211_ASSOC_TIMEOUT_SHORT	(HZ / 10)
++#define IEEE80211_ASSOC_TIMEOUT		(ox_assoc_timeout)
++#define IEEE80211_ASSOC_TIMEOUT_LONG	(ox_assoc_timeout_long)
++#define IEEE80211_ASSOC_TIMEOUT_SHORT	(ox_assoc_timeout_short)
+ #define IEEE80211_ASSOC_MAX_TRIES	3
+ 
+ #define IEEE80211_ADV_TTLM_SAFETY_BUFFER_MS (100 * USEC_PER_MSEC)

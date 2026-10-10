@@ -1,0 +1,90 @@
+#!/bin/sh
+# Ox OS stage-2 init (PID 1) for the Phase-1 virtual target.
+#
+# Boot order:
+#   1. pseudo-filesystems + volatile dirs
+#   2. s6-rc service graph (preferred) -> plain s6-svscan supervision
+#      (interim, R-21) -> bare getty (last resort)
+set -u
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+echo "<6>ox-stage2: entered pid=$$" > /dev/kmsg 2>/dev/null
+exec </dev/console >/dev/console 2>&1
+
+mount -t proc -o nosuid,noexec,nodev proc /proc 2>/dev/null
+mount -t sysfs -o nosuid,noexec,nodev sysfs /sys 2>/dev/null
+mount -t devtmpfs -o mode=0755 devtmpfs /dev 2>/dev/null || mount -t devtmpfs devtmpfs /dev 2>/dev/null
+mkdir -p /dev/pts /dev/shm /run /tmp
+
+TMS() { cut -d' ' -f1 /proc/uptime; }
+echo "OXMILESTONE name=stage2-begin tms=$(TMS)"
+
+mount -t devpts -o mode=0620 devpts /dev/pts 2>/dev/null
+mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /tmp 2>/dev/null
+mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run 2>/dev/null
+
+if [ -b /dev/mapper/oxdata ]; then
+    mkdir -p /data
+    DATAFS=ext4
+    [ -f /etc/ox/data.fs ] && DATAFS="$(cat /etc/ox/data.fs)"
+    if mount -t "$DATAFS" -o nosuid,noexec,nodev /dev/mapper/oxdata /data; then
+        echo "OXMILESTONE name=data-ready tms=$(TMS) fs=$DATAFS"
+        echo "encrypted-data ok $(cut -d' ' -f1 /proc/uptime)" > /data/.ox-ready 2>/dev/null
+        sync
+    else
+        echo "ox-stage2: FATAL: unlocked data volume failed to mount" >&2
+    fi
+elif [ -b /dev/vdc ]; then
+    if ! mount -o nosuid,noexec /dev/vdc /data 2>/dev/null; then
+        echo "ox-init: data volume present but not mounted (Phase 1: unencrypted)" >&2
+    fi
+fi
+
+echo "OXMILESTONE name=basefs-ready tms=$(TMS)"
+
+SUPERVISOR="none"
+
+if command -v s6-svscan >/dev/null 2>&1 && [ -d /etc/s6-rc/compiled ]; then
+    # --- preferred: full s6-rc state machine ---
+    mkdir -p /run/service.scan
+    s6-svscan /run/service.scan &
+    SCANSVC=$!
+    i=0
+    while [ "$i" -lt 50 ] && [ ! -d /run/service.scan/.s6-svscan ]; do
+        i=$((i + 1))
+        sleep 0.1
+    done
+    if s6-rc-init -c /etc/s6-rc/compiled -l /run/service -t 8000 /run/service.scan &&
+       s6-rc -up change default; then
+        SUPERVISOR="s6-rc"
+    else
+        # --- interim: direct supervision without the s6-rc live state (R-21) ---
+        echo "ox-stage2: s6-rc live-state unavailable; using direct s6 supervision" >&2
+        kill "$SCANSVC" 2>/dev/null
+        wait "$SCANSVC" 2>/dev/null
+        rm -rf /run/service /run/service.scan
+        mkdir -p /run/service.scan
+        cp -a /etc/s6-rc/compiled/servicedirs/. /run/service.scan/ 2>/dev/null
+        s6-svscan /run/service.scan &
+        SCANSVC=$!
+        i=0
+        while [ "$i" -lt 50 ] && [ ! -d /run/service.scan/.s6-svscan ]; do
+            i=$((i + 1))
+            sleep 0.1
+        done
+        s6-svscanctl -an /run/service.scan 2>/dev/null
+        SUPERVISOR="s6-svscan"
+    fi
+fi
+
+if [ "$SUPERVISOR" = "none" ]; then
+    echo "ox-stage2: no service supervisor installed; fallback getty mode" >&2
+    setsid cttyhack sh -c 'exec getty -L ttyAMA0 115200 vt100' </dev/null >/dev/ttyAMA0 2>&1 &
+fi
+
+echo "OXMILESTONE name=userspace-ready tms=$(TMS)"
+echo "<6>ox-stage2: supervisor=$SUPERVISOR pid=$$" > /dev/kmsg 2>/dev/null
+
+while :; do
+    wait || sleep 60
+done

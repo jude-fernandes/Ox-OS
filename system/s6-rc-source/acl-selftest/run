@@ -1,0 +1,116 @@
+#!/bin/sh
+# acl-selftest longrun (chunk 60): the compositor's per-client op ACLs,
+# proven from the NORMAL side. Each oxctl call is its own (unprivileged)
+# connection, so:
+#   1. window-secure on the shell's pad must be REFUSED (SYSTEM-only)
+#   2. closing the shell's window must be REFUSED (not owned)
+#   3. creating a window must be ALLOWED (own-window lifecycle stays
+#      open; the disconnect reaper closes it when this client exits)
+# The positive SYSTEM side is the shell itself: lock-shield on=true in
+# the same boot proves the registered role works.
+{
+    echo "DBG-ACL-SELFTEST-START pid=$$"
+    i=0
+    while [ ! -S /run/ox/sockets/oxcom.sock ]; do
+        [ $i -ge 120 ] && break
+        sleep 1; i=$((i + 1))
+    done
+    [ -S /run/ox/sockets/oxcom.sock ] || {
+        echo "OXMILESTONE name=acl-selftest-failed reason=no-socket"
+        exec sleep infinity
+    }
+    # 1. shield op refused for a normal client
+    R1=$(/usr/bin/oxctl oxcom window-secure '{"id":2,"on":true}' 2>&1)
+    echo "DBG-ACL-SECURE $R1"
+    case "$R1" in
+        *"acl:"*) echo "OXMILESTONE name=acl-normal-refused op=window-secure" ;;
+        *) echo "OXMILESTONE name=acl-selftest-failed reason=secure-not-refused"; exec sleep infinity ;;
+    esac
+    # 2. foreign window-close refused
+    R2=$(/usr/bin/oxctl oxcom window-close '{"id":2}' 2>&1)
+    echo "DBG-ACL-CLOSE $R2"
+    case "$R2" in
+        *"acl:"*) echo "OXMILESTONE name=acl-normal-refused op=window-close" ;;
+        *) echo "OXMILESTONE name=acl-selftest-failed reason=close-not-refused"; exec sleep infinity ;;
+    esac
+    # 3. own window-new allowed
+    R3=$(/usr/bin/oxctl oxcom window-new '{"x":10,"y":10,"w":40,"h":40}' 2>&1)
+    echo "DBG-ACL-NEW $R3"
+    case "$R3" in
+        *'"id":'*) echo "OXMILESTONE name=acl-allowed op=window-new" ;;
+        *) echo "OXMILESTONE name=acl-selftest-failed reason=new-refused"; exec sleep infinity ;;
+    esac
+    # 4. foreign INPUT WAIT refused (chunk 61): oxctl is a different
+    #    PROCESS than the shell, and the kernel-verified peer pid owns
+    #    nothing — reading the pad's clicks must be refused. The pad id
+    #    comes from the shield milestone, so wait for the shield FIRST
+    #    (the selftest boots faster than the shell on some boots — the
+    #    2026-09-28 run built '{"window":,...}' from an empty PAD and
+    #    oxctl rightly refused to parse it).
+    i=0
+    while [ $i -lt 300 ]; do
+        /bin/dmesg 2>/dev/null | grep -aq "name=lock-shield id=[0-9]* on=true" && break
+        sleep 2; i=$((i + 1))
+    done
+    PAD=$(  /bin/dmesg 2>/dev/null | grep -a "name=lock-shield id=" | tail -1 | sed "s/.*id=\([0-9]*\).*/\1/" )
+    echo "DBG-ACL-PAD $PAD"
+    case "$PAD" in
+        ""|*[!0-9]*) echo "OXMILESTONE name=acl-selftest-failed reason=no-pad-id"; exec sleep infinity ;;
+    esac
+    R4=$(/usr/bin/oxctl oxcom click-recv "{\"window\":$PAD,\"timeout_ms\":100}" 2>&1)
+    echo "DBG-ACL-CLICKRECV $R4"
+    case "$R4" in
+        *"acl:"*) echo "OXMILESTONE name=acl-input-refused op=click-recv" ;;
+        *) echo "OXMILESTONE name=acl-selftest-failed reason=click-recv-not-refused"; exec sleep infinity ;;
+    esac
+    # 5. screendump destination sandbox (chunk 65): a screen.read grant
+    #    buys PIXELS, not root-owned arbitrary-file-write. Grant first,
+    #    then aim OUTSIDE /data/ox/artifacts/ — must be refused — and
+    #    finally the positive control: a flat artifacts path lands.
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"screen.read","mode":"grant"}' >/dev/null 2>&1
+    R5=$(/usr/bin/oxctl oxcom screendump '{"path":"/data/ox/permstore.journal"}' 2>&1)
+    echo "DBG-ACL-SANDBOX $R5"
+    case "$R5" in
+        *"outside"*) echo "OXMILESTONE name=acl-sandbox-refused op=screendump" ;;
+        *) echo "OXMILESTONE name=acl-selftest-failed reason=sandbox-not-refused"; exec sleep infinity ;;
+    esac
+    R6=$(/usr/bin/oxctl oxcom screendump '{"path":"/data/ox/artifacts/acl-sandbox-ok.ppm"}' 2>&1)
+    echo "DBG-ACL-SANDBOX-OK $R6"
+    case "$R6" in
+        *'"path":'*) echo "OXMILESTONE name=acl-sandbox-allowed op=screendump" ;;
+        *) echo "OXMILESTONE name=acl-selftest-failed reason=sandbox-blocked-legal"; exec sleep infinity ;;
+    esac
+    rm -f /data/ox/artifacts/acl-sandbox-ok.ppm
+    # 6. identity spoof (chunk 68): the consult identity is the
+    #    KERNEL-verified peer comm — a GRANTED app's name in the payload
+    #    confers nothing. ox-hello is granted contacts.read; oxctl is
+    #    NOT (contacts-selftest leaves oxctl=deny). The claim must not
+    #    rescue the call.
+    /usr/bin/oxctl permstored set '{"app":"ox-hello","permission":"contacts.read","mode":"grant"}' >/dev/null 2>&1
+    R7=$(/usr/bin/oxctl contactsd list '{"app":"ox-hello"}' 2>&1)
+    echo "DBG-ACL-SPOOF $R7"
+    case "$R7" in
+        *denied*) echo "OXMILESTONE name=acl-spoof-refused op=contacts-list" ;;
+        *) echo "OXMILESTONE name=acl-selftest-failed reason=spoof-accepted"; exec sleep infinity ;;
+    esac
+    # 7. write-path ACL (chunk 70): the permission store's writers are
+    #    system-only, and the identity is the COMM — a COPY of oxctl
+    #    under another name is a different identity, so the same `set`
+    #    must be refused. Positive control: the real oxctl still writes.
+    cp /usr/bin/oxctl /tmp/not-oxctl
+    R8=$(/tmp/not-oxctl permstored set '{"app":"oxctl","permission":"contacts.read","mode":"grant"}' 2>&1)
+    echo "DBG-ACL-WRITE $R8"
+    case "$R8" in
+        *"system writer"*) echo "OXMILESTONE name=acl-write-refused op=perm-set caller=not-oxctl" ;;
+        *) echo "OXMILESTONE name=acl-selftest-failed reason=write-accepted"; exec sleep infinity ;;
+    esac
+    R9=$(/usr/bin/oxctl permstored set '{"app":"oxctl","permission":"contacts.read","mode":"grant"}' 2>&1)
+    echo "DBG-ACL-WRITE-OK $R9"
+    case "$R9" in
+        *refused*|*acl*) echo "OXMILESTONE name=acl-selftest-failed reason=real-oxctl-refused"; exec sleep infinity ;;
+        *) echo "OXMILESTONE name=acl-write-allowed op=perm-set caller=oxctl" ;;
+    esac
+    echo "DBG-ACL-SELFTEST-DONE"
+    echo "OXMILESTONE name=acl-selftest-done"
+    exec sleep infinity
+} > /dev/console 2>&1

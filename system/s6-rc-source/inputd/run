@@ -1,0 +1,11 @@
+#!/bin/sh
+# inputd longrun: evdev keyboard → oxcom console window.
+# No-op (sleep) when the guest binary is absent so the DB still works
+# on binary-less builds.
+if [ -x /usr/bin/inputd ]; then
+    /usr/bin/inputd
+    RC=$?
+    echo "<6>inputd: exited rc=$RC" > /dev/kmsg 2>/dev/null || true
+    exit "$RC"
+fi
+exec sleep infinity

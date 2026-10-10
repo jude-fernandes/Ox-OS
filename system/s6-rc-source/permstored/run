@@ -1,0 +1,5 @@
+#!/bin/sh
+# permstored longrun: the permission store. Persistent per-app grants
+# (grant/deny/fake) in /data/ox/permstore.json; default deny; every
+# mutation journaled to kmsg.
+exec /usr/bin/permstored

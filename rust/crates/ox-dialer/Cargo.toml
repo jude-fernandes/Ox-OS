@@ -1,0 +1,10 @@
+[package]
+name = "ox-dialer"
+version = "0.1.0"
+edition = "2021"
+description = "Ox OS Dialer app v1: pad + call/end over oxmodemd, honest-permission states"
+
+[dependencies]
+ox-ipc = { workspace = true }
+ox-ui = { workspace = true }
+serde_json = { workspace = true }

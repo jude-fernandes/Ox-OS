@@ -1,0 +1,44 @@
+#!/bin/sh
+# alerts-selftest longrun: seeds the live activity panel and captures
+# its artifact. Grants itself post-notification, posts two
+# notifications (visible in the shell's Alerts panel), then — when the
+# gate opens the panel — captures a compositor scene dump.
+{
+    i=0
+    while [ ! -S /run/ox/sockets/notifd.sock ] || [ ! -S /run/ox/sockets/permstored.sock ]; do
+        [ $i -ge 120 ] && break
+        sleep 1; i=$((i + 1))
+    done
+    FAIL=no
+    # let the notifd selftest finish its own post, then start from a
+    # clean slate so the panel count is deterministic (exactly 2)
+    i=0
+    until dmesg 2>/dev/null | grep -q "name=notifd-flow-ok"; do
+        [ $i -ge 120 ] && break
+        sleep 1; i=$((i + 1))
+    done
+    /usr/bin/oxctl notifd clear '{}' >/dev/null 2>&1
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"post-notification","mode":"grant"}' >/dev/null 2>&1
+    P1=$(/usr/bin/oxctl notifd post '{"app":"oxctl","title":"Welcome to Ox","body":"your activity lives here"}' 2>&1)
+    echo "DBG-ALERTS-POST-1 $P1"
+    case "$P1" in *'"id":'*) ;; *) FAIL=yes ;; esac
+    P2=$(/usr/bin/oxctl notifd post '{"app":"oxctl","title":"Battery: charging","body":"50 percent — synthetic status"}' 2>&1)
+    echo "DBG-ALERTS-POST-2 $P2"
+    case "$P2" in *'"id":'*) ;; *) FAIL=yes ;; esac
+    L=$(/usr/bin/oxctl notifd list '{}' 2>&1)
+    echo "DBG-ALERTS-LIST $L"
+    case "$L" in *'"count"'*|*'"notifications"'*) ;; *) FAIL=yes ;; esac
+    [ "$FAIL" = no ] && echo "OXMILESTONE name=alerts-seeded" || echo "OXMILESTONE name=alerts-seed-failed"
+
+    # artifact: the gate opens the panel; dump it when it appears
+    mkdir -p /data/ox/artifacts
+    until dmesg 2>/dev/null | grep -q "name=shell-alerts-open"; do
+        sleep 1
+    done
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"screen.read","mode":"grant"}' >/dev/null 2>&1
+    D=$(/usr/bin/oxctl oxcom screendump '{"path":"/data/ox/artifacts/alerts-open.ppm"}' 2>&1)
+    echo "DBG-ALERTS-DUMP $D"
+    /bin/sync
+    echo "OXMILESTONE name=alerts-selftest-done"
+    exec sleep infinity
+} > /dev/console 2>&1

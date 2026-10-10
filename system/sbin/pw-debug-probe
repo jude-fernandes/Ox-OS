@@ -1,0 +1,21 @@
+#!/bin/sh
+# In-guest pipewire playback debugging (dev only, run from the serial
+# console): dumps the sink node state, the ports, then a debug-traced
+# playback attempt. Everything lands on the console for the gate log.
+export PIPEWIRE_RUNTIME_DIR=/run/ox/pipewire
+export XDG_RUNTIME_DIR=/run/ox/pipewire
+
+echo DBG-BEGIN
+echo DBG-NODES
+pw-cli ls Node > /tmp/nodes.txt 2>&1
+grep -B4 -A22 ox-speaker /tmp/nodes.txt | head -34
+echo DBG-PORTS
+pw-cli ls Port > /tmp/ports.txt 2>&1
+wc -l < /tmp/ports.txt
+head -60 /tmp/ports.txt
+echo DBG-PLAY
+PIPEWIRE_DEBUG=3 timeout 15 pw-play /usr/share/ox/tone.wav > /tmp/play.log 2>&1
+echo DBG-PLAY-RC=$?
+echo DBG-PLAY-LOG
+grep -a 'stream\|state\|node\|error\|failed\|param\|Link' /tmp/play.log | tail -40
+echo DBG-END

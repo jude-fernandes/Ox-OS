@@ -1,0 +1,74 @@
+#!/bin/sh
+# gnss-selftest longrun: the permission layer over the GNSS stack.
+# With the receiver up, a GRANTED app asking locationd for a fix must
+# get the REAL receiver fix (synthetic:false with coordinates that
+# match the emulator) — never a synthetic coordinate, and never a
+# refusal. Deny is restored afterwards (least privilege).
+{
+    sleep 8
+    i=0
+    while [ ! -S /run/ox/sockets/gnssd.sock ] || [ ! -S /run/ox/sockets/locationd.sock ] || [ ! -S /run/ox/sockets/permstored.sock ]; do
+        [ $i -ge 120 ] && break
+        sleep 1; i=$((i + 1))
+    done
+    if [ ! -S /run/ox/sockets/gnssd.sock ] || [ ! -S /run/ox/sockets/locationd.sock ] || [ ! -S /run/ox/sockets/permstored.sock ]; then
+        echo "OXMILESTONE name=gnss-location-test-failed reason=no-sockets"
+        echo "<6>selftest: gnss-walker done" > /dev/kmsg 2>/dev/null
+        exec sleep infinity
+    fi
+
+    # driver-level honesty first: before any fix exists gnssd reports
+    # fix:null (the receiver's no-fix phase); after the fix it reports
+    # the real coordinates
+    P=$(/usr/bin/oxctl gnssd fix '{}' 2>&1)
+    echo "DBG-GNSS-DRIVER $P"
+
+    # grant the test app and wait for the real fix to flow through the
+    # policy layer (the emulator holds a no-fix phase first, so the
+    # first answers may legitimately be fix:null — keep polling).
+    # ONLY when the GNSS emulator is actually attached (its virtio
+    # serial port exists): on every other boot this poll used to run
+    # doomed for its full 240 iterations (~25 min under load) with the
+    # grant held the whole time — pure console/CPU burden and a long
+    # least-privilege violation for nothing.
+    # grep the CONTENTS of the name files (ls lists paths — that check
+    # could never match and silently skipped the grant leg on every boot)
+    if grep -q "gnss.0" /sys/class/virtio-ports/*/name 2>/dev/null; then
+        # The consult keys on the CALLER's kernel comm (chunk 68): the
+        # leg drives locationd through oxctl, so the grant belongs to
+        # oxctl — the payload's "app" field is display-only, never
+        # identity.
+        /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"location.read","mode":"grant"}' >/dev/null 2>&1
+        OK=no
+        G=""
+        i=0
+        while [ $i -lt 240 ]; do
+            G=$(/usr/bin/oxctl locationd fix '{"app":"gnssd"}' 2>&1)
+            case "$G" in
+                *'"synthetic":false'*'"lat":'*|*'"lat":'*'"synthetic":false'*)
+                    case "$G" in
+                        *'"fix":null'*) ;; # no fix yet — keep polling
+                        *) OK=yes; break ;;
+                    esac ;;
+            esac
+            sleep 1; i=$((i + 1))
+        done
+        echo "DBG-GNSS-GRANT $G"
+        if [ "$OK" = yes ]; then
+            LAT=$(echo "$G" | grep -o '"lat":[-0-9.]*' | head -1 | cut -d: -f2)
+            LON=$(echo "$G" | grep -o '"lon":[-0-9.]*' | head -1 | cut -d: -f2)
+            echo "OXMILESTONE name=gnss-location-grant-ok lat=$LAT lon=$LON"
+        else
+            echo "OXMILESTONE name=gnss-location-grant-failed"
+        fi
+    else
+        echo "OXMILESTONE name=gnss-location-grant-skipped reason=no-gnss.0-port"
+    fi
+    # kmsg marker for the walker-serialization wait in
+    # fake-providers-selftest (console echoes never reach dmesg).
+    echo "<6>selftest: gnss-walker done" > /dev/kmsg 2>/dev/null
+
+    # restore deny (least privilege)
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"location.read","mode":"deny"}' >/dev/null 2>&1
+    exec sleep infinity
+} > /dev/console 2>&1

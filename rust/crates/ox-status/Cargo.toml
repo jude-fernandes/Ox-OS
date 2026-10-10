@@ -1,0 +1,10 @@
+[package]
+name = "ox-status"
+version = "0.1.0"
+edition = "2021"
+description = "Ox OS status screen client: first oxcom IPC consumer"
+
+[dependencies]
+ox-ipc = { workspace = true }
+ox-ui = { workspace = true }
+serde_json = { workspace = true }

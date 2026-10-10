@@ -1,0 +1,2 @@
+#!/bin/sh
+exec setsid cttyhack sh -c 'exec getty -L ttyAMA0 115200 vt100'

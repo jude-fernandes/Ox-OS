@@ -1,0 +1,15 @@
+[package]
+name = "oxcom"
+version = "0.1.0"
+edition = "2021"
+description = "Ox OS compositor/service host (Phase 2 scaffold; graphics backend lands behind a feature flag)"
+
+[dependencies]
+ox-ipc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+libc = "0.2"
+
+[features]
+# gui gates the DRM/scanout path; input/scene/IPC logic is always compiled
+gui = []

@@ -1,0 +1,76 @@
+#!/bin/sh
+# camera-selftest longrun: insmods the V4L2 stack (vivid = the
+# virtual sensor), waits for /dev/video0, then walks the
+# honest-permission lifecycle for camera.read exactly like
+# locationd's: deny -> refused | fake -> synthetic frame | grant ->
+# REAL frame from the sensor (vivid's 8-bar color strip pinned by
+# colors=8). Deny is restored afterwards (least privilege).
+{
+    # hold a wake lock so idle doze cannot suspend mid-capture (a
+    # suspend during the sensor read would fail the grant leg flakily)
+    i=0
+    while [ ! -S /run/ox/sockets/powerd.sock ] && [ $i -lt 60 ]; do
+        sleep 1; i=$((i + 1))
+    done
+    n=0
+    while [ $n -lt 10 ]; do
+        OUT=$(/usr/bin/oxctl powerd wake-lock '{"id":"camera-selftest"}' 2>&1)
+        case "$OUT" in *held*) break ;; esac
+        sleep 5; n=$((n + 1))
+    done
+
+    i=0
+    while [ ! -S /run/ox/sockets/camerad.sock ] || [ ! -S /run/ox/sockets/permstored.sock ]; do
+        [ $i -ge 120 ] && break
+        sleep 1; i=$((i + 1))
+    done
+    if [ ! -S /run/ox/sockets/camerad.sock ] || [ ! -S /run/ox/sockets/permstored.sock ]; then
+        echo "OXMILESTONE name=camera-test-failed reason=no-sockets"
+        exec sleep infinity
+    fi
+
+    # modules ship xz-decompressed into /lib/modules (insmod cannot
+    # read compressed); dependency order, two passes so any ordering
+    # mistake self-heals
+    for pass in 1 2; do
+        for k in mc videobuf2-common videobuf2-memops videobuf2-vmalloc videobuf2-dma-contig videobuf2-v4l2 videodev v4l2-dv-timings cec v4l2-tpg vivid; do
+            [ -d "/sys/module/$k" ] || /bin/insmod "/lib/modules/$k.ko" 2>/dev/null || true
+        done
+    done
+    i=0
+    while [ ! -e /dev/video0 ]; do
+        [ $i -ge 30 ] && break
+        sleep 1; i=$((i + 1))
+    done
+    [ -e /dev/video0 ] \
+        && echo "OXMILESTONE name=camera-vivid-ok device=/dev/video0" \
+        || { echo "OXMILESTONE name=camera-test-failed reason=no-video0"; exec sleep infinity; }
+
+    F=no
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"camera.read","mode":"deny"}' >/dev/null 2>&1
+    D=$(/usr/bin/oxctl camerad capture '{"app":"oxctl"}' 2>&1)
+    echo "DBG-CAM-DENY $D"
+    case "$D" in *denied*|*DENIED*) echo "OXMILESTONE name=camera-deny-refused" ;; *) F=yes ;; esac
+
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"camera.read","mode":"fake"}' >/dev/null 2>&1
+    FKE=$(/usr/bin/oxctl camerad capture '{"app":"oxctl"}' 2>&1)
+    echo "DBG-CAM-FAKE $FKE"
+    case "$FKE" in *'"synthetic":true'*) echo "OXMILESTONE name=camera-fake-synthetic" ;; *) F=yes ;; esac
+
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"camera.read","mode":"grant"}' >/dev/null 2>&1
+    G=$(/usr/bin/oxctl camerad capture '{"app":"oxctl"}' 2>&1)
+    echo "DBG-CAM-GRANT $G"
+    case "$G" in
+        *'"synthetic":false'*)
+            case "$G" in
+                *'"colors":8'*) echo "OXMILESTONE name=camera-real-captured colors=8" ;;
+                *) F=yes ;;
+            esac ;;
+        *) F=yes ;;
+    esac
+
+    # restore deny (least privilege)
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"camera.read","mode":"deny"}' >/dev/null 2>&1
+    [ "$F" = no ] && echo "OXMILESTONE name=camera-test-ok" || echo "OXMILESTONE name=camera-test-failed"
+    exec sleep infinity
+} > /dev/console 2>&1

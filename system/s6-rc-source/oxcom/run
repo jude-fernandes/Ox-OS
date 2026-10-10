@@ -1,0 +1,13 @@
+#!/bin/sh
+# oxcom longrun: compositor/service host. No-op (sleep) when the guest
+# binary is absent so the service DB still works on binary-less builds.
+# Chunk 63: the exit code is journaled to the kernel ring — a silent
+# death (no panic, no kernel fault line) self-reports its SIGNAL class
+# (139=SIGSEGV 134=SIGABRT 137=SIGKILL 0/1=clean) on the serial.
+if [ -x /usr/bin/oxcom ]; then
+    /usr/bin/oxcom
+    RC=$?
+    echo "<6>oxcom: exited rc=$RC" > /dev/kmsg 2>/dev/null || true
+    exit "$RC"
+fi
+exec sleep infinity

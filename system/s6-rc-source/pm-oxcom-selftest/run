@@ -1,0 +1,60 @@
+#!/bin/sh
+# pm-oxcom-selftest longrun (chunk 63): the compositor must SURVIVE the
+# power drill's suspend/resume. Waits for the drill's resume milestone,
+# then proves oxcom still serves: status answers and — with a
+# screen.read grant — a post-resume dump lands. Deaths are reported
+# honestly in the milestone (restarts are visible via the run-file
+# "oxcom: exited rc=" journal); the assertion is SERVICE, not zero
+# deaths.
+{
+    echo "DBG-PMOX-START pid=$$"
+    i=0
+    until /bin/dmesg 2>/dev/null | grep -q "name=pm-resumed"; do
+        [ $i -ge 300 ] && break
+        sleep 2; i=$((i + 1))
+    done
+    /bin/dmesg 2>/dev/null | grep -q "name=pm-resumed" || {
+        echo "OXMILESTONE name=pm-oxcom-failed reason=no-resume"
+        exec sleep infinity
+    }
+    # settle: let any further drill legs and the shell finish booting
+    sleep 5
+    N=$(/bin/dmesg 2>/dev/null | grep -ac "name=pm-resumed")
+    # Chunk 64: the status probe is EVENT-RELATIVE, not one-shot — the
+    # service bar is "eventually serves post-resume", and a slow boot
+    # can legitimately need a minute before oxcom answers.
+    i=0
+    S=timeout
+    while :; do
+        S=$(/usr/bin/oxctl oxcom status '{}' 2>&1)
+        case "$S" in *'"service":"oxcom"'*) break ;; esac
+        if [ $i -ge 90 ]; then break; fi
+        sleep 2; i=$((i + 1))
+    done
+    echo "DBG-PMOX-STATUS $S"
+    case "$S" in
+        *'"service":"oxcom"'*) ;;
+        *) echo "OXMILESTONE name=pm-oxcom-failed reason=no-status"; exec sleep infinity ;;
+    esac
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"screen.read","mode":"grant"}' >/dev/null 2>&1
+    # Same event-relative bar for the dump: the display thread may still
+    # be claiming the scanout on a wedged first attempt — and chunk 64b's
+    # watchdog needs up to ~90s to time-box one, restart the process,
+    # and land a FRESH post-resume claim. 240s covers a full cycle.
+    i=0
+    D=timeout
+    while :; do
+        D=$(/usr/bin/oxctl oxcom screendump '{"path":"/data/ox/artifacts/pm-resume.ppm"}' 2>&1)
+        case "$D" in *'"path":'*) break ;; esac
+        if [ $i -ge 120 ]; then break; fi
+        sleep 2; i=$((i + 1))
+    done
+    echo "DBG-PMOX-DUMP $D"
+    case "$D" in
+        *'"path":'*) ;;
+        *) echo "OXMILESTONE name=pm-oxcom-failed reason=no-dump"; exec sleep infinity ;;
+    esac
+    DEATHS=$(/bin/dmesg 2>/dev/null | grep -ac "oxcom: exited rc=")
+    echo "OXMILESTONE name=oxcom-pm-resilient resumes=$N deaths=$DEATHS"
+    exec sleep infinity
+} > /dev/console 2>&1

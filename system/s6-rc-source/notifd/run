@@ -1,0 +1,4 @@
+#!/bin/sh
+# notifd longrun: notification daemon. Permission-checked posts (via
+# permstored), banner window via ox-ui, list/dismiss/clear over IPC.
+exec /usr/bin/notifd

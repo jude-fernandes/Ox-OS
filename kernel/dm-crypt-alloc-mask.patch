@@ -1,0 +1,13 @@
+--- a/drivers/md/dm-crypt.c
++++ b/drivers/md/dm-crypt.c
+@@ -2381,8 +2381,8 @@ static int crypt_alloc_tfms_skcipher(
+ 	for (i = 0; i < cc->tfms_count; i++) {
+-		cc->cipher_tfm.tfms[i] = crypto_alloc_skcipher(ciphermode, 0,
+-						CRYPTO_ALG_ALLOCATES_MEMORY);
++		/* Ox dev (R-23): drop the ALLOCATES_MEMORY mask (excluded all
++		 * registered skciphers in the TCG guest). */
+ 		if (IS_ERR(cc->cipher_tfm.tfms[i])) {
+ 			err = PTR_ERR(cc->cipher_tfm.tfms[i]);
+ 			crypt_free_tfms(cc);
+ 			return err;
+ 		}

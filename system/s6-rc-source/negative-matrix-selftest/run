@@ -1,0 +1,75 @@
+#!/bin/sh
+# negative-matrix-selftest longrun: the Phase-3 exit criterion's
+# permission-bypass negative matrix, ON-DEVICE in one boot. Every row
+# is a bypass attempt that MUST be refused (or fail closed); each row
+# journals matrix-N-ok and the raw output is printed for the gate.
+# Positive-mode legs (grant/fake) live in their own gates — this is
+# the refusal matrix.
+{
+    i=0
+    while [ ! -S /run/ox/sockets/permstored.sock ] || [ ! -S /run/ox/sockets/notifd.sock ] || [ ! -S /run/ox/sockets/contactsd.sock ] || [ ! -S /run/ox/sockets/locationd.sock ] || [ ! -S /run/ox/sockets/messagesd.sock ] || [ ! -S /run/ox/sockets/intentd.sock ] || [ ! -S /run/ox/sockets/lockd.sock ]; do
+        [ $i -ge 120 ] && break
+        sleep 1; i=$((i + 1))
+    done
+    A=matrix.app   # never bound in permstored -> deny by default
+    FAIL=0
+
+    # 1. permstored: an unbound app reads as deny (the store's answer)
+    R=$(/usr/bin/oxctl permstored get '{"app":"'$A'","permission":"contacts.read"}' 2>&1)
+    echo "DBG-MATRIX-1 $R"
+    case "$R" in *'"mode":"deny"'*|*'"mode": "deny"'*) echo "OXMILESTONE name=matrix-1-ok" ;; *) echo "matrix row 1 FAILED"; FAIL=1 ;; esac
+
+    # 2. notifd: unbound app cannot post
+    R=$(/usr/bin/oxctl notifd post '{"app":"'$A'","title":"bypass","body":"x"}' 2>&1)
+    echo "DBG-MATRIX-2 $R"
+    case "$R" in *denied*|*DENIED*) echo "OXMILESTONE name=matrix-2-ok" ;; *) echo "matrix row 2 FAILED"; FAIL=1 ;; esac
+
+    # 3. contactsd: unbound app cannot list contacts
+    R=$(/usr/bin/oxctl contactsd list '{"app":"'$A'"}' 2>&1)
+    echo "DBG-MATRIX-3 $R"
+    case "$R" in *denied*|*DENIED*) echo "OXMILESTONE name=matrix-3-ok" ;; *) echo "matrix row 3 FAILED"; FAIL=1 ;; esac
+
+    # 4. locationd: unbound app cannot get a fix
+    R=$(/usr/bin/oxctl locationd fix '{"app":"'$A'"}' 2>&1)
+    echo "DBG-MATRIX-4 $R"
+    case "$R" in *denied*|*DENIED*) echo "OXMILESTONE name=matrix-4-ok" ;; *) echo "matrix row 4 FAILED"; FAIL=1 ;; esac
+
+    # 5. messagesd: unbound app cannot read messages
+    R=$(/usr/bin/oxctl messagesd list '{"app":"'$A'"}' 2>&1)
+    echo "DBG-MATRIX-5 $R"
+    case "$R" in *denied*|*DENIED*) echo "OXMILESTONE name=matrix-5-ok" ;; *) echo "matrix row 5 FAILED"; FAIL=1 ;; esac
+
+    # 6. intentd: a corrupted package is refused at install
+    R=$(/usr/bin/oxpkg install /usr/share/ox/packages/broken.oxp 2>&1)
+    echo "DBG-MATRIX-6 $R"
+    case "$R" in *refused*) echo "OXMILESTONE name=matrix-6-ok" ;; *) echo "matrix row 6 FAILED"; FAIL=1 ;; esac
+
+    # 7. intentd: a structurally valid package with a WRONG signature
+    #    is refused (evil.oxp carries hello's signature)
+    R=$(/usr/bin/oxpkg install /usr/share/ox/packages/evil.oxp 2>&1)
+    echo "DBG-MATRIX-7 $R"
+    case "$R" in *refused*) echo "OXMILESTONE name=matrix-7-ok" ;; *) echo "matrix row 7 FAILED"; FAIL=1 ;; esac
+
+    # 8. intentd: an unpackaged, non-builtin app cannot start
+    R=$(/usr/bin/oxpkg start NoSuchApp 2>&1)
+    echo "DBG-MATRIX-8 $R"
+    case "$R" in *refused*|*not-packaged*|*error*) echo "OXMILESTONE name=matrix-8-ok" ;; *) echo "matrix row 8 FAILED"; FAIL=1 ;; esac
+
+    # 9. intentd: a nonexistent app cannot be removed
+    R=$(/usr/bin/oxpkg remove NoSuchApp 2>&1)
+    echo "DBG-MATRIX-9 $R"
+    case "$R" in *refused*) echo "OXMILESTONE name=matrix-9-ok" ;; *) echo "matrix row 9 FAILED"; FAIL=1 ;; esac
+
+    # 10. lockd: a wrong PIN is rejected (row placed LAST: it arms the
+    #     throttle; the deep throttle drill lives in pin-gate)
+    R=$(/usr/bin/oxctl lockd verify '{"pin":"4321"}' 2>&1)
+    echo "DBG-MATRIX-10 $R"
+    case "$R" in *'"ok":false'*|*'"ok": false'*) echo "OXMILESTONE name=matrix-10-ok" ;; *) echo "matrix row 10 FAILED"; FAIL=1 ;; esac
+
+    if [ "$FAIL" = 0 ]; then
+        echo "OXMILESTONE name=matrix-ok rows=10"
+    else
+        echo "OXMILESTONE name=matrix-failed"
+    fi
+    exec sleep infinity
+} > /dev/console 2>&1

@@ -1,0 +1,58 @@
+#!/bin/sh
+# grid-selftest longrun: exercise the shell's event-driven grid
+# refresh. Waits for the UI unlock, installs the staged grid.oxp
+# (name Gridtest), holds it long enough for the gate to screendump
+# and tap-launch it, then removes it. intentd broadcasts pkgs-changed
+# on both transitions; the gate asserts the shell journaled
+# shell-grid-event-refresh within ~2s (the poll fallback would take
+# ~5s and journal a different line).
+{
+    i=0
+    until dmesg 2>/dev/null | grep -q "name=shell-unlocked"; do
+        [ $i -ge 240 ] && break
+        sleep 1; i=$((i + 1))
+    done
+    dmesg 2>/dev/null | grep -q "name=shell-unlocked" || {
+        echo "OXMILESTONE name=grid-selftest-failed reason=never-unlocked"
+        exec sleep infinity
+    }
+    # Gridtest installs LATE (75s after unlock): with the Camera and
+    # Dialer packages now boot-installed, an early Gridtest would steal
+    # dyn slot 2 and race the other tile gates' taps (tiles-gate and
+    # uninstall-gate tap Hello / the inert spot at slot 2 up to ~50s
+    # after unlock). grid-event-gate synchronizes on the install event,
+    # so the delay costs it nothing but wait time.
+    sleep 75
+    O=$(/usr/bin/oxpkg install /usr/share/ox/packages/grid.oxp 2>&1)
+    echo "DBG-GRID-INSTALL $O"
+    case "$O" in *ok*) ;; *) echo "OXMILESTONE name=grid-selftest-failed reason=install"; exec sleep infinity ;; esac
+    # let the event refresh land, then capture the grid WITH the tile —
+    # a compositor scene dump (QEMU screendump is dead after the first
+    # guest suspend/resume)
+    sleep 4
+    mkdir -p /data/ox/artifacts
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"screen.read","mode":"grant"}' >/dev/null 2>&1
+    D=$(/usr/bin/oxctl oxcom screendump '{"path":"/data/ox/artifacts/grid-install.ppm"}' 2>&1)
+    echo "DBG-GRID-DUMP-INSTALL $D"
+    /bin/sync
+    case "$D" in *'"path"'*) ;; *) echo "OXMILESTONE name=grid-selftest-failed reason=dump-install"; exec sleep infinity ;; esac
+    # 75s hold: the gate's causal taps need room under load (delivery
+    # lag can stretch a tap's effect past a minute)
+    sleep 75
+    # the gate tap-launches Gridtest (ox-hello runs ~20s), and intentd
+    # refuses to remove a running app — retry until it has exited
+    a=0
+    while :; do
+        R=$(/usr/bin/oxpkg remove Gridtest 2>&1)
+        echo "DBG-GRID-REMOVE $R"
+        case "$R" in *ok*) echo "OXMILESTONE name=grid-selftest-done"; break ;; esac
+        a=$((a + 1))
+        [ $a -ge 120 ] && { echo "OXMILESTONE name=grid-selftest-failed reason=remove"; break; }
+        sleep 5
+    done
+    sleep 3
+    D=$(/usr/bin/oxctl oxcom screendump '{"path":"/data/ox/artifacts/grid-removed.ppm"}' 2>&1)
+    echo "DBG-GRID-DUMP-REMOVE $D"
+    /bin/sync
+    exec sleep infinity
+} > /dev/console 2>&1

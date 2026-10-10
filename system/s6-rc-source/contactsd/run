@@ -1,0 +1,4 @@
+#!/bin/sh
+# contactsd longrun: contacts service with honest permission
+# modes (deny/fake/grant) consulted per app.
+exec /usr/bin/ox-contactsd

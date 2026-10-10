@@ -1,0 +1,5 @@
+# Ox OS firmware manifest — fairphone5 (QCM6490)
+# NOTE (honest status): bring-up pending; list below is the expected initial set
+# from mainline postmarketOS work and will be re-audited per release.
+qca/hpnv21.bin                        # Wi-Fi/BT combo (WCN6750)
+qcom/qcm6490/fairphone5/*             # subsystem firmware (modem/adsp/cdsp via pq)

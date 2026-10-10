@@ -1,0 +1,4 @@
+#!/bin/sh
+# messagesd longrun: messages service with honest permission
+# modes (deny/fake/grant) consulted per app.
+exec /usr/bin/ox-messagesd

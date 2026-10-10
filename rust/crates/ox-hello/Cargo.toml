@@ -1,0 +1,10 @@
+[package]
+name = "ox-hello"
+version = "0.1.0"
+edition = "2021"
+description = "Ox OS Hello app: the demo .oxp package payload for the packaging gate"
+
+[dependencies]
+ox-ipc = { workspace = true }
+ox-ui = { workspace = true }
+serde_json = { workspace = true }

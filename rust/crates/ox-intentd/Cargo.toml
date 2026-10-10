@@ -1,0 +1,9 @@
+[package]
+name = "ox-intentd"
+version = "0.1.0"
+edition = "2021"
+description = "Ox OS app lifecycle daemon: start/stop apps over IPC, spawn + track + reap"
+
+[dependencies]
+ox-ipc = { workspace = true }
+serde_json = { workspace = true }

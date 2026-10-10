@@ -1,0 +1,60 @@
+#!/bin/sh
+# wireplumber longrun: the PipeWire session manager. Provides what the
+# bare server cannot: ALSA device discovery (monitor.alsa ->
+# api.alsa.enum.udev; the guest has no udevd, but libudev's initial
+# enumeration reads sysfs directly, so boot-time discovery works), sink
+# node creation via acp, default-device policy, and stream->sink
+# linking — the missing piece that left pw-play suspended forever.
+WP=$(ls -d /nix/store/*wireplumber-aarch64-unknown-linux-musl-0.5.8/ 2>/dev/null | grep -v -- -dev | head -1)
+PW=$(ls -d /nix/store/*pipewire-aarch64-unknown-linux-musl-1.2.7/ 2>/dev/null | grep -v -- -dev | head -1)
+mkdir -p /run/ox/pipewire
+export PIPEWIRE_RUNTIME_DIR=/run/ox/pipewire
+export XDG_RUNTIME_DIR=/run/ox/pipewire
+export LD_LIBRARY_PATH="$WP/lib:$PW/lib:$PW/lib/pipewire-0.3:$PW/lib/spa-0.2"
+# The acp card setup opens ALSA from THIS process; card-name resolution
+# needs the alsa-lib config tree (see the pipewire service).
+export ALSA_CONFIG_DIR=$(ls -d /nix/store/*alsa-lib-aarch64-unknown-linux-musl-*/share/alsa 2>/dev/null | head -1)
+
+{
+    # The server may still be in its pcmC0D0p wait; poll for a serving
+    # core before connecting.
+    i=0
+    until /usr/bin/pw-cli info 0 > /dev/null 2>&1; do
+        [ $i -ge 60 ] && { echo "OXMILESTONE name=wireplumber-no-server"; wait; exit 1; }
+        sleep 1; i=$((i + 1))
+    done
+    /usr/bin/wireplumber > /tmp/wp.log 2>&1 &
+    WPSRV=$!
+    # Ready when a wpctl client actually sees the session objects.
+    i=0
+    until /usr/bin/wpctl status > /tmp/wp-status.txt 2>&1; do
+        [ $i -ge 30 ] && break
+        sleep 1; i=$((i + 1))
+    done
+    if grep -q "Sinks:" /tmp/wp-status.txt 2>/dev/null; then
+        echo "OXMILESTONE name=wireplumber-up"
+        echo "DBG-WP-SINKS"
+        sed -n '/Sinks:/,/Sources:/p' /tmp/wp-status.txt | head -8
+        # Hold a wake lock so idle doze cannot suspend the console while
+        # the scripted playback runs.
+        /usr/bin/oxctl powerd wake-lock '{"id":"wp-gate"}' 2>/dev/null || true
+        # The real app path: pw-play with NO --target and NO manual
+        # linking. WirePlumber matches the stream to the default sink;
+        # audio then flows pipewire -> ALSA -> virtio-sound -> host wav.
+        if timeout 40 /usr/bin/pw-play /usr/share/ox/tone.wav > /tmp/wp-play.log 2>&1; then
+            sleep 2
+            echo "OXMILESTONE name=wp-played"
+        else
+            echo "OXMILESTONE name=wp-play-failed rc=$?"
+            echo "DBG-WPLOG"; tail -30 /tmp/wp.log
+            echo "DBG-PLAYLOG"; tail -30 /tmp/wp-play.log
+            echo "DBG-STATUS"; cat /tmp/wp-status.txt
+        fi
+        /usr/bin/oxctl powerd wake-lock '{"id":"wp-gate","release":true}' 2>/dev/null || true
+    else
+        echo "OXMILESTONE name=wireplumber-failed"
+        echo "DBG-WPLOG"; tail -40 /tmp/wp.log 2>/dev/null
+        echo "DBG-STATUS"; cat /tmp/wp-status.txt 2>/dev/null
+    fi
+    wait $WPSRV
+} > /dev/console 2>&1

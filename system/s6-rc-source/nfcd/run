@@ -1,0 +1,7 @@
+#!/bin/sh
+# nfcd longrun: the NFC service — owns the virtual NFC reader
+# ("oxnfc.0" virtio-serial port), parses checksummed tag frames and
+# serves the last tag behind permstored nfc.read. If the reader is
+# absent (boots without the port) the daemon stays up serving IPC
+# (same no-flap rule as oxmodemd/gnssd).
+exec /usr/bin/ox-nfcd

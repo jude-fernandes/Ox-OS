@@ -1,0 +1,7 @@
+# Ox OS firmware manifest — pinephone-pro (RK3399)
+# Hash-pinned firmware required at runtime. CI: this file is diffed against
+# the built image to prove no unlisted blobs ship.
+brcm/brcmfmac4356-sdio.bin            # Wi-Fi (Pine64 variant)
+brcm/brcmfmac4356-sdio.pine64,pinephone-pro.txt
+brcm/brcm4356.hcd                     # Bluetooth patchram
+rockchip/dptx.bin                     # DP PHY training

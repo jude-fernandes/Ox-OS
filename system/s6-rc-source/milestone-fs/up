@@ -1,0 +1,2 @@
+#!/bin/sh
+echo "OXMILESTONE name=s6-services-up tms=$(cut -d ' ' -f1 /proc/uptime)"

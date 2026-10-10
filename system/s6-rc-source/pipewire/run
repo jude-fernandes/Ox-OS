@@ -1,0 +1,53 @@
+#!/bin/sh
+# pipewire longrun: the real audio server, dynamic musl aarch64 from the
+# Nix store closure copied into the rootfs. Runs as a plain daemon (no
+# systemd, no dbus activation — Ox starts it directly from s6). Output to
+# the console so gates can read it (R-26: longruns only under the
+# direct-svscan fallback).
+# Device discovery and stream linking belong to WirePlumber (its own
+# service, deps: pipewire). This service proves the server itself: a
+# native-protocol client round trip (pw-cli info 0), then it stays up.
+PW=$(ls -d /nix/store/*pipewire-aarch64-unknown-linux-musl-1.2.7/ 2>/dev/null | grep -v -- -dev | head -1)
+mkdir -p /run/ox/pipewire
+export PIPEWIRE_RUNTIME_DIR=/run/ox/pipewire
+export XDG_RUNTIME_DIR=/run/ox/pipewire
+# dlopen'd modules/plugins are found by bare soname; musl has no
+# ld.so.conf, so widen the runtime search to the module/SPA dirs.
+export LD_LIBRARY_PATH="$PW/lib/pipewire-0.3:$PW/lib/spa-0.2:$PW/lib"
+# alsa-lib resolves card names (even plain indices) through its config
+# tree; without ALSA_CONFIG_DIR every open fails with "Cannot get card
+# index". Needed here once WirePlumber's monitor opens the card from the
+# server-side objects, and by any future in-server ALSA objects.
+export ALSA_CONFIG_DIR=$(ls -d /nix/store/*alsa-lib-aarch64-unknown-linux-musl-*/share/alsa 2>/dev/null | head -1)
+# The WirePlumber monitor scans once at connect; if the sound nodes are
+# not there yet (TCG timing race with snd-virtio registration) the guest
+# has no audio devices at all. Wait for the actual playback PCM before
+# starting the server.
+i=0
+until [ -e /dev/snd/pcmC0D0p ] || [ $i -ge 30 ]; do
+    sleep 1; i=$((i + 1))
+done
+
+{
+    /usr/bin/pw-cli --version
+    /usr/bin/pipewire &
+    SERVER=$!
+    # Prove the server is really serving: a native-protocol client round
+    # trip (Core object info) — not just a process that stayed alive.
+    up=no
+    i=0
+    while [ $i -lt 20 ]; do
+        sleep 1
+        if /usr/bin/pw-cli info 0 > /dev/console 2>&1; then
+            up=yes
+            break
+        fi
+        i=$((i + 1))
+    done
+    if [ "$up" = yes ]; then
+        echo "OXMILESTONE name=pipewire-up"
+    else
+        echo "OXMILESTONE name=pipewire-failed"
+    fi
+    wait $SERVER
+} > /dev/console 2>&1

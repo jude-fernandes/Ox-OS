@@ -1,0 +1,54 @@
+#!/bin/sh
+# resourced-selftest longrun: shortly after boot (before the idle-doze
+# regime begins), hold a wake lock, tighten the tier thresholds over
+# IPC, generate real memory pressure with a CHUNKED tmpfs fill (10 MB
+# per chunk, polling status after each — converges at any TCG speed),
+# and verify tier1/tier2 escalation through the daemon's IPC status.
+# Then clean up, release the lock, and park.
+{
+    sleep 8
+    i=0
+    while [ ! -S /run/ox/sockets/resourced.sock ] && [ $i -lt 120 ]; do
+        sleep 1; i=$((i + 1))
+    done
+    if [ ! -S /run/ox/sockets/resourced.sock ]; then
+        echo "OXMILESTONE name=resourced-tier-failed"
+        exec sleep infinity
+    fi
+    # The drill must not be frozen mid-fill by the idle doze.
+    /usr/bin/oxctl powerd wake-lock '{"id":"res-drill"}' 2>&1 | tail -1
+    /usr/bin/oxctl resourced config '{"tier1_stall_pct":5,"tier2_stall_pct":20,"tier3_stall_pct":95,"warn_avail_pct":80,"critical_avail_pct":75}' 2>&1 | tail -1
+    mkdir -p /tmp/press
+    /bin/busybox mount -t tmpfs -o size=600M tmpfs /tmp/press 2>/dev/null || {
+        echo "OXMILESTONE name=resourced-tier-failed"
+        exec sleep infinity
+    }
+    # Chunked fill: 10 MB per chunk, status polled after each. Avail
+    # starts ~87% of 1 GiB; warn (80%) crosses at ~110 MB written,
+    # critical (75%) at ~175 MB — bounded work that converges at any
+    # machine speed.
+    rm -f /tmp/press/blob
+    OK=no
+    i=0
+    while [ $i -lt 20 ]; do
+        head -c 10000000 /dev/zero >> /tmp/press/blob 2>/dev/null || break
+        S=$(/usr/bin/oxctl resourced status 2>/dev/null)
+        T1=$(printf '%s' "$S" | sed -n 's/.*"tier1_events":\([0-9]*\).*/\1/p')
+        T2=$(printf '%s' "$S" | sed -n 's/.*"tier2_events":\([0-9]*\).*/\1/p')
+        echo "DBG-PRESS t1=$T1 t2=$T2"
+        if [ -n "$T1" ] && [ "$T1" != 0 ] && [ -n "$T2" ] && [ "$T2" != 0 ]; then
+            OK=yes
+            break
+        fi
+        i=$((i + 1))
+    done
+    rm -f /tmp/press/blob
+    /bin/busybox umount /tmp/press 2>/dev/null || true
+    /usr/bin/oxctl powerd wake-lock '{"id":"res-drill","release":true}' 2>/dev/null || true
+    if [ "$OK" = yes ]; then
+        echo "OXMILESTONE name=resourced-tier-ok"
+    else
+        echo "OXMILESTONE name=resourced-tier-failed"
+    fi
+    exec sleep infinity
+} > /dev/console 2>&1

@@ -1,0 +1,10 @@
+[package]
+name = "ox-lockd"
+version = "0.1.0"
+edition = "2021"
+description = "Ox OS lock daemon: owns the device lock secret (verify + enroll over IPC)"
+
+[dependencies]
+ox-ipc = { workspace = true }
+ox-pay-proto = { path = "../ox-pay-proto" }
+serde_json = { workspace = true }

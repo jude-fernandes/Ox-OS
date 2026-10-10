@@ -1,0 +1,259 @@
+#!/bin/sh
+# wifi-selftest longrun: the wireless stack AND the honest join flow.
+# There are NO factory credentials (wpa_supplicant boots with an
+# empty network list), so the walk is:
+#   0. radio interfaces exist; client NOT associated (no factory join)
+#   1. wifi.join DENY   -> oxwifid connect REFUSED (radio stays clean)
+#   2. wifi.join FAKE   -> synthetic join accepted, radio STILL clean
+#   3. wifi.join GRANT  -> REAL WPA2 association (legacy milestone
+#      name wifi-associated preserved for the legacy gate), then an
+#      ICMP ping crosses the authenticated link
+# Milestones are the gate's assertion surface. Restores deny.
+{
+    # radios: hwsim ships as modules — insmod in dependency order
+    i=0
+    while [ ! -e /lib/modules/cfg80211.ko ]; do
+        [ $i -ge 20 ] && break
+        sleep 1; i=$((i + 1))
+    done
+    # explicit dependency order: rfkill before cfg80211, cfg80211
+    # before mac80211, mac80211 before hwsim. Two passes per attempt —
+    # the boot selftests insmod their module sets concurrently
+    # (bt-selftest's rfkill, camera's videobuf2 chain) and a first
+    # pass can lose a dependency race (unknown-symbol errors). If the
+    # interfaces STILL don't show, tear the stack down and reload:
+    # hwsim has been observed half-loading (netlink init prints, no
+    # radios register) under the concurrent-load regime; only a clean
+    # rmmod + insmod recovers that.
+    # Each insmod is bounded: under the concurrent selftest load hwsim
+    # has been observed HANGING mid-init (netlink registers, radios
+    # never appear, insmod never returns) — an unbounded insmod would
+    # wedge this selftest forever with no diagnostic. Timeout kills
+    # the loader, the rmmods clear what they can, and the next attempt
+    # rides the recovery path.
+    i=0
+    while [ $i -lt 4 ]; do
+        for pass in 1 2; do
+            for k in rfkill cfg80211 mac80211 mac80211_hwsim; do
+                /bin/busybox timeout 60 /bin/insmod "/lib/modules/$k.ko" 2>/dev/null || true
+            done
+        done
+        [ -d /sys/class/net/wlan0 ] && [ -d /sys/class/net/wlan1 ] && break
+        echo "DBG-WIFI-RELOAD hwsim retry $((i + 1))"
+        /bin/busybox timeout 10 /bin/rmmod mac80211_hwsim 2>/dev/null || true
+        /bin/busybox timeout 10 /bin/rmmod mac80211 2>/dev/null || true
+        sleep 2
+        i=$((i + 1))
+    done
+    # radio interfaces must exist (cmdline: mac80211_hwsim.radios=2)
+    i=0
+    while [ ! -d /sys/class/net/wlan0 ] || [ ! -d /sys/class/net/wlan1 ]; do
+        [ $i -ge 240 ] && break
+        sleep 1; i=$((i + 1))
+    done
+    [ -d /sys/class/net/wlan0 ] && [ -d /sys/class/net/wlan1 ] \
+        && echo "OXMILESTONE name=wifi-iface-ok" \
+        || { echo "OXMILESTONE name=wifi-failed reason=no-hwsim"; exec sleep infinity; }
+
+    # Channel-context pin: a managed interface has NO channel context
+    # before association — hwsim delivers frames per-radio only when the
+    # receiving radio's channel matches, so the AP's unicast auth
+    # response is dropped whenever the client radio's transient context
+    # is absent (the chunk-51/52 "auth timed out" lottery). A minimal
+    # keep AP on the CLIENT radio pins phy0 to 2412 — the same channel
+    # the real AP now uses (hostapd.conf channel=1) — making the auth
+    # exchange deterministic. Lab-environment config; the keep AP is
+    # never joined.
+    /usr/bin/iw phy phy0 interface add apkeep0 type __ap 2>/dev/null || true
+    /bin/ip link set apkeep0 up 2>/dev/null || true
+    cat > /tmp/apkeep.conf <<'AKEEP'
+interface=apkeep0
+driver=nl80211
+ssid=channel-keep
+channel=1
+AKEEP
+    /usr/bin/hostapd -B /tmp/apkeep.conf 2>&1 | tail -1
+    echo "DBG-WIFI-KEEP phy0 pinned rc=$?"
+
+    # oxwifid must be up before the join walk
+    i=0
+    while [ ! -S /run/ox/sockets/oxwifid.sock ]; do
+        [ $i -ge 60 ] && break
+        sleep 1; i=$((i + 1))
+    done
+    [ -S /run/ox/sockets/oxwifid.sock ] \
+        || { echo "OXMILESTONE name=wifi-failed reason=no-oxwifid"; exec sleep infinity; }
+
+    state() {
+        /usr/bin/wpa_cli -p /run/wpa_ctrl -i wlan0 status 2>/dev/null | grep "wpa_state=" | head -1 | cut -d= -f2
+    }
+
+    # 0. the honest default: no FACTORY join. On a fresh device the
+    # radio must be idle. On a remembered boot (credentials stored by
+    # an earlier granted join) the autojoin replays that consent —
+    # wait for it to settle and require it to have happened, then
+    # disconnect so the matrix below is exercised from a clean state.
+    if [ -f /data/ox/wifi-credentials.json ]; then
+        echo "DBG-WIFI-REMEMBERED-STORE present"
+        i=0
+        while [ $i -lt 120 ]; do
+            /bin/dmesg 2>/dev/null | grep -q "name=wifi-autojoined" && break
+            /bin/dmesg 2>/dev/null | grep -q "name=wifi-autojoin-failed" && break
+            sleep 2; i=$((i + 1))
+        done
+        /bin/dmesg 2>/dev/null | grep -aq "name=wifi-autojoined" \
+            || { echo "OXMILESTONE name=wifi-failed reason=no-autojoin"; exec sleep infinity; }
+        echo "OXMILESTONE name=wifi-autojoin-ok"
+        REMEMBERED=1
+        /usr/bin/wpa_cli -p /run/wpa_ctrl -i wlan0 disable_network all >/dev/null 2>&1
+        sleep 3
+    else
+        REMEMBERED=0
+        sleep 5
+        S=$(state)
+        echo "DBG-WIFI-BOOT-STATE $S"
+        if [ "$S" = "COMPLETED" ]; then
+            echo "OXMILESTONE name=wifi-failed reason=factory-join"
+            exec sleep infinity
+        fi
+        echo "OXMILESTONE name=wifi-no-factory-join state=$S"
+    fi
+
+    J() {
+        # bounded: under drill-load TCG stalls an unbounded oxctl has
+        # been observed wedging this selftest past the gate's budget
+        # with no diagnostic (try=3 echo never printed)
+        /bin/busybox timeout 90 /usr/bin/oxctl oxwifid connect '{"app":"oxctl","ssid":"ox-virt-ap","psk":"oxdevpass1"}' 2>&1
+    }
+
+    # enable hwsim unicast-delivery diagnostics (kernel debug param,
+    # chunk-52/53 investigation): every skipped unicast frame is
+    # logged with its skip reason during the join
+    echo Y > /sys/module/mac80211_hwsim/parameters/ox_debug_unicast 2>/dev/null || true
+
+    # Ox lab (chunk 53): widen the auth/assoc response windows at
+    # runtime too. The cmdline already raises them at mac80211 load;
+    # this is the belt to that suspenders. Values in jiffies.
+    for p in ox_auth_timeout:1000 ox_auth_timeout_long:1500 ox_auth_timeout_short:750 ox_assoc_timeout:1000 ox_assoc_timeout_long:1500 ox_assoc_timeout_short:750; do
+        echo "${p#*:}" > "/sys/module/mac80211/parameters/${p%%:*}" 2>/dev/null || true
+    done
+
+    # 1. DENY: the bound refusal; the radio stays clean
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"wifi.join","mode":"deny"}' >/dev/null 2>&1
+    D=$(J)
+    echo "DBG-WIFI-JOIN-DENY $D"
+    case "$D" in
+        *denied*|*DENIED*) echo "OXMILESTONE name=wifi-join-denied-ok" ;;
+        *) echo "OXMILESTONE name=wifi-failed reason=deny-leak"; exec sleep infinity ;;
+    esac
+
+    # 2. FAKE: synthetic join accepted; the radio never saw the PSK
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"wifi.join","mode":"fake"}' >/dev/null 2>&1
+    F=$(J)
+    echo "DBG-WIFI-JOIN-FAKE $F"
+    case "$F" in
+        *'"synthetic":true'*) echo "OXMILESTONE name=wifi-join-fake-ok" ;;
+        *) echo "OXMILESTONE name=wifi-failed reason=fake-not-synthetic"; exec sleep infinity ;;
+    esac
+    S=$(state)
+    if [ "$S" = "COMPLETED" ]; then
+        echo "OXMILESTONE name=wifi-failed reason=fake-touched-radio"
+        exec sleep infinity
+    fi
+    echo "OXMILESTONE name=wifi-join-fake-radio-clean state=$S"
+
+    # 3. GRANT: the real join — provision + select through the daemon,
+    #    then wait for WPA2 association (TCG can be slow)
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"wifi.join","mode":"grant"}' >/dev/null 2>&1
+    /usr/bin/oxctl permstored set '{"app":"ox-settings","permission":"wifi.scan","mode":"grant"}' >/dev/null 2>&1
+    /usr/bin/oxctl permstored set '{"app":"ox-settings","permission":"wifi.join","mode":"grant"}' >/dev/null 2>&1
+    # ASSOCIATION: the pre-association unicast exchange inside
+    # mac80211_hwsim is host-speed sensitive (the AP hears every auth
+    # request; under TCG load the client can miss the response window).
+    # User semantics: a join that didn't land gets RETRIED — each
+    # connect op is a fresh scan+auth lottery. Up to 4 full attempts
+    # before the honest failure verdict (with radio diagnostics).
+    S=$(state)
+    tries=0
+    while [ "$S" != "COMPLETED" ] && [ $tries -lt 4 ]; do
+        tries=$((tries + 1))
+        G=$(J)
+        echo "DBG-WIFI-JOIN-GRANT try=$tries $G"
+        i=0
+        while :; do
+            S=$(state)
+            [ "$S" = "COMPLETED" ] && break
+            [ $i -ge 45 ] && break
+            sleep 1; i=$((i + 1))
+        done
+    done
+    if [ "$S" != "COMPLETED" ]; then
+        echo "DBG-WIFI-FAILSTATE begin"
+        /bin/ip -o link show wlan0 2>&1
+        /usr/bin/iw dev 2>&1 | head -20
+        echo "DBG-WIFI-SCAN $(/usr/bin/wpa_cli -p /run/wpa_ctrl -i wlan0 scan_results 2>&1 | tail -3 | tr '
+' '|')"
+        echo "DBG-WIFI-DMESG $(/bin/dmesg 2>/dev/null | grep -ai 'wlan0\|wlan1\|hwsim' | tail -6 | tr '
+' '|')"
+        echo "OXMILESTONE name=wifi-failed reason=no-association"
+        exec sleep infinity
+    fi
+    echo "OXMILESTONE name=wifi-associated ssid=ox-virt-ap tries=$tries"
+    echo "OXMILESTONE name=wifi-join-grant-ok state=$S"
+
+    # a completed GRANTED join earns persistence: wait for the daemon's
+    # own journal (the association can land after the RPC deadline —
+    # the watcher persists it then), then require the store
+    i=0
+    while [ $i -lt 150 ]; do
+        /bin/dmesg 2>/dev/null | grep -q "name=wifi-credential-stored" && break
+        sleep 2; i=$((i + 1))
+    done
+    /bin/dmesg 2>/dev/null | grep -aq "name=wifi-credential-stored" \
+        || { echo "OXMILESTONE name=wifi-failed reason=no-credential-journal"; exec sleep infinity; }
+    if grep -aq 'ox-virt-ap' /data/ox/wifi-credentials.json 2>/dev/null; then
+        echo "OXMILESTONE name=wifi-credentials-stored ssid=ox-virt-ap"
+    else
+        echo "OXMILESTONE name=wifi-failed reason=no-credential-store"
+        exec sleep infinity
+    fi
+
+    # address both ends and push an ICMP packet across the link
+    /bin/ip addr add 10.10.0.1/24 dev wlan1 2>/dev/null
+    /bin/ip addr add 10.10.0.2/24 dev wlan0 2>/dev/null
+    /bin/ip link set wlan1 up 2>/dev/null
+    /bin/ip link set wlan0 up 2>/dev/null
+    sleep 2
+    if /bin/ping -c 3 -W 4 10.10.0.1 >/dev/null 2>&1; then
+        echo "OXMILESTONE name=wifi-ping-ok"
+        echo "OXMILESTONE name=wifi-stack-ok"
+    else
+        echo "OXMILESTONE name=wifi-failed reason=no-ping"
+        exec sleep infinity
+    fi
+
+    # oxwifid scan: grant Settings wifi.scan, scan, find the AP
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"wifi.scan","mode":"grant"}' >/dev/null 2>&1
+    R=$(/usr/bin/oxctl oxwifid scan '{"app":"Settings"}' 2>&1)
+    echo "DBG-WIFI-SCAN $R"
+    case "$R" in
+        *ox-virt-ap*) echo "OXMILESTONE name=wifi-scan-found" ;;
+        *) echo "OXMILESTONE name=wifi-scan-missing" ;;
+    esac
+
+    # restore deny (least privilege)
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"wifi.join","mode":"deny"}' >/dev/null 2>&1
+
+    # on a remembered boot, exercise forget (the system surface) and
+    # require the credential to leave the store — boot 1 keeps it so
+    # boot 2 can prove the autojoin
+    if [ "$REMEMBERED" = 1 ]; then
+        F=$(/usr/bin/oxctl oxwifid forget '{"ssid":"ox-virt-ap"}' 2>&1)
+        echo "DBG-WIFI-FORGET $F"
+        case "$F" in
+            *'"removed":true'*) echo "OXMILESTONE name=wifi-forget-ok" ;;
+            *) echo "OXMILESTONE name=wifi-failed reason=forget-failed" ;;
+        esac
+    fi
+    exec sleep infinity
+} > /dev/console 2>&1

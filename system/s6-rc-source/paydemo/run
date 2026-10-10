@@ -1,0 +1,11 @@
+#!/bin/sh
+# paydemo: dev/demo longrun — simulate one tap per boot. Runs oxctl once
+# (build a handoff tag, then read it back over IPC), which makes the wallet
+# pop its confirmation card; the accept/reject decision comes from the user
+# via oxcom. Output goes to the console so gates can read it.
+if [ -x /usr/bin/oxctl ]; then
+    /usr/bin/oxctl paydemo 1250 cafe.example > /dev/console 2>&1
+else
+    echo "paydemo: no oxctl binary (skipped)"
+fi
+exec sleep infinity

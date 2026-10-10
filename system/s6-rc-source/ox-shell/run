@@ -1,0 +1,4 @@
+#!/bin/sh
+# ox-shell longrun: the home screen. Draws the launch grid through
+# ox-ui and makes the tiles tappable via oxcom click delivery.
+exec /usr/bin/ox-shell

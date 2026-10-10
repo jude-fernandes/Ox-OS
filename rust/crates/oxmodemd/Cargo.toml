@@ -1,0 +1,9 @@
+[package]
+name = "oxmodemd"
+version = "0.1.0"
+edition = "2021"
+description = "Ox OS modem daemon: owns the radio chardev (modem slot), AT engine, egress journal"
+
+[dependencies]
+ox-ipc = { workspace = true }
+serde_json = { workspace = true }

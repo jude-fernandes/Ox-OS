@@ -1,0 +1,22 @@
+#!/bin/sh
+# audio-selftest longrun: play a 1 s tone through the guest sound stack at
+# startup, then park. Must be a LONGRUN, not a oneshot: under the direct
+# s6-svscan fallback (R-21, s6-rc live-state unavailable under TCG) only
+# longruns get supervised — a oneshot never runs there. Parking instead of
+# exiting avoids the supervisor restart-replaying the tone forever.
+#
+# s6-rc oneshot output is not wired to the console (unlike supervised
+# longruns, which inherit it) — everything meaningful is redirected to
+# /dev/console explicitly so gates can read it off the serial log.
+{
+    if [ -x /usr/bin/ox-snd-test ]; then
+        if /usr/bin/ox-snd-test; then
+            echo "OXMILESTONE name=audio-selftest-ok"
+        else
+            echo "audio-selftest: player exited nonzero (no /dev/dsp?)"
+        fi
+    else
+        echo "audio-selftest: no player binary (skipped)"
+    fi
+} > /dev/console 2>&1
+exec sleep infinity

@@ -1,0 +1,2 @@
+# Ox OS firmware manifest — qemu-virt-aarch64
+# This target must remain 100% blob-free (PRD reproducibility requirement).

@@ -1,0 +1,9 @@
+[package]
+name = "ox-gnssd"
+version = "0.1.0"
+edition = "2021"
+description = "Ox OS GNSS daemon: owns the virtual GNSS receiver (virtio-serial), parses NMEA, publishes the last-known fix"
+
+[dependencies]
+ox-ipc = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,9 @@
+[package]
+name = "ox-nfcd"
+version = "0.1.0"
+edition = "2021"
+description = "Ox OS NFC daemon: owns the virtual NFC reader (virtio-serial), parses checksummed tag frames, serves the last tag behind permstored nfc.read"
+
+[dependencies]
+ox-ipc = { workspace = true }
+serde_json = { workspace = true }

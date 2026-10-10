@@ -1,0 +1,68 @@
+#!/bin/sh
+# pkg-selftest longrun: the .oxp packaging flow against intentd.
+# 1. install the staged hello.oxp -> intent-install app=Hello
+# 2. install the broken package -> intentd MUST refuse
+#    (intent-refused src=.../broken.oxp)
+# 3. list shows Hello
+# 4. start Hello -> intentd spawns the installed package binary
+#    (intent-start app=Hello) -> hello draws (hello-ready) and
+#    auto-exits -> intentd reaps (intent-exit app=Hello)
+# Idempotent; safe to run every boot.
+{
+    sleep 8
+    i=0
+    while [ ! -S /run/ox/sockets/intentd.sock ] || [ ! -S /run/ox/sockets/notifd.sock ] || [ ! -S /run/ox/sockets/permstored.sock ]; do
+        [ $i -ge 120 ] && break
+        sleep 1; i=$((i + 1))
+    done
+    if [ ! -S /run/ox/sockets/intentd.sock ] || [ ! -S /run/ox/sockets/notifd.sock ] || [ ! -S /run/ox/sockets/permstored.sock ]; then
+        echo "OXMILESTONE name=pkg-flow-failed"
+        exec sleep infinity
+    fi
+    FAIL=no
+    I=$(/usr/bin/oxpkg install /usr/share/ox/packages/hello.oxp 2>&1)
+    echo "DBG-INSTALL $I"
+    case "$I" in *ok*) ;; *) FAIL=yes ;; esac
+    B=$(/usr/bin/oxpkg install /usr/share/ox/packages/broken.oxp 2>&1)
+    echo "DBG-BROKEN $B"
+    case "$B" in *refused*) ;; *) FAIL=yes ;; esac
+    E=$(/usr/bin/oxpkg install /usr/share/ox/packages/evil.oxp 2>&1)
+    echo "DBG-EVIL $E"
+    case "$E" in *refused*) ;; *) FAIL=yes ;; esac
+    # chunk 69: a VALIDLY SIGNED package declaring a reserved system
+    # bin — the signature checks out, the install must still refuse
+    # (the comm would impersonate a system identity)
+    IM=$(/usr/bin/oxpkg install /usr/share/ox/packages/impersonation.oxp 2>&1)
+    echo "DBG-IMPERSONATION $IM"
+    case "$IM" in
+        *reserved*) echo "OXMILESTONE name=install-refused-reserved bin=ox-settings" ;;
+        *) FAIL=yes ;;
+    esac
+    L=$(/usr/bin/oxpkg list 2>&1)
+    echo "DBG-LIST $L"
+    case "$L" in *Hello*) ;; *) FAIL=yes ;; esac
+    S=$(/usr/bin/oxpkg start Hello 2>&1)
+    echo "DBG-START $S"
+    case "$S" in *'"pid":'*) ;; *) FAIL=yes ;; esac
+    # permission lifecycle: manifest-declared permission bound as deny.
+    # Chunk 68: the denial proof is the APP's own launch post — ox-hello
+    # is bound deny, so the freshly-started Hello refuses its banner
+    # (hello-notify-denied). Asserting via oxctl stopped working when
+    # notifd-selftest began granting oxctl post-notification (the
+    # permstored space is shared across selftests — grants are
+    # boot-global), which made every oxctl post "granted".
+    i=0
+    while [ $i -lt 90 ]; do
+        /bin/dmesg 2>/dev/null | grep -q "name=hello-notify-denied" && break
+        sleep 2; i=$((i + 1))
+    done
+    P1=$(/bin/dmesg 2>/dev/null | grep -ac "name=hello-notify-denied")
+    echo "DBG-DENY-HELLO count=$P1"
+    [ "$P1" -ge 1 ] || FAIL=yes
+    if [ "$FAIL" = no ]; then
+        echo "OXMILESTONE name=pkg-flow-ok"
+    else
+        echo "OXMILESTONE name=pkg-flow-failed"
+    fi
+    exec sleep infinity
+} > /dev/console 2>&1

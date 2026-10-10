@@ -1,0 +1,5 @@
+#!/bin/sh
+# wpa_supplicant longrun: the Wi-Fi client on hwsim radio 0 (wlan0).
+# NO factory credentials — the config carries only the ctrl interface;
+# every join happens through oxwifid's permission-checked connect op.
+exec /usr/bin/wpa_supplicant -i wlan0 -c /etc/wpa_supplicant.conf

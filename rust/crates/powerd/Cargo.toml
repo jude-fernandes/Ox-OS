@@ -1,0 +1,9 @@
+[package]
+name = "powerd"
+version = "0.1.0"
+edition = "2021"
+description = "Ox OS power daemon: suspend with RTC wake, resume accounting, anti-thrash budget"
+
+[dependencies]
+ox-ipc = { workspace = true }
+serde_json = { workspace = true }

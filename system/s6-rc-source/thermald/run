@@ -1,0 +1,8 @@
+#!/bin/sh
+# thermald longrun: thermal policy. On hardware the source is the
+# thermal zone sysfs; on the virtual target the gate points
+# OX_THERMAL_SRC at a regular file it drives (QEMU has no thermal
+# zones — same substitution pattern as the modem/audio emulators).
+OX_THERMAL_SRC=/tmp/ox-thermal/temp
+export OX_THERMAL_SRC
+exec /usr/bin/oxthermald

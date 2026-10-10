@@ -1,0 +1,88 @@
+#!/bin/sh
+# messages-store-selftest longrun: the real telephony writer behind
+# the Phase-3 synthetic-store contract. Waits for the gate's injected
+# SMS to land in messagesd (messages-ingested), then walks the honest
+# permission matrix against REAL data:
+#   deny  -> refused
+#   fake  -> synthetic:true (clearly fake entries)
+#   grant -> the injected SMS VERBATIM (dir=in, from +15550042)
+# Restores deny (least privilege). Walks its OWN app id
+# (messages.store, NOT messages.test): fake-providers-selftest owns
+# that row, and two concurrent walkers on one permstored row raced
+# each other's mode flips (chunk-41 finding). An unbound app defaults
+# to deny, so this walk is self-contained.
+{
+    sleep 8
+    i=0
+    while [ ! -S /run/ox/sockets/messagesd.sock ] || [ ! -S /run/ox/sockets/permstored.sock ]; do
+        [ $i -ge 120 ] && break
+        sleep 1; i=$((i + 1))
+    done
+    if [ ! -S /run/ox/sockets/messagesd.sock ] || [ ! -S /run/ox/sockets/permstored.sock ]; then
+        echo "OXMILESTONE name=messages-store-failed reason=no-sockets"
+        exec sleep infinity
+    fi
+
+    # the gate injects an inbound SMS once the modem is up; wait until
+    # messagesd's ingest thread has appended it to the real store
+    i=0
+    while [ $i -lt 300 ]; do
+        /bin/dmesg 2>/dev/null | grep -q "name=messages-ingested" && break
+        sleep 2; i=$((i + 1))
+    done
+    if ! /bin/dmesg 2>/dev/null | grep -q "name=messages-ingested"; then
+        echo "OXMILESTONE name=messages-store-failed reason=no-ingest"
+        exec sleep infinity
+    fi
+
+    F=no
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"messages.read","mode":"deny"}' >/dev/null 2>&1
+    D=$(/usr/bin/oxctl messagesd list '{"app":"oxctl"}' 2>&1)
+    echo "DBG-STORE-DENY $D"
+    case "$D" in *denied*|*DENIED*) ;; *) F=yes ;; esac
+
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"messages.read","mode":"fake"}' >/dev/null 2>&1
+    Fk=$(/usr/bin/oxctl messagesd list '{"app":"oxctl"}' 2>&1)
+    echo "DBG-STORE-FAKE $Fk"
+    case "$Fk" in
+        *'"synthetic":true'*) ;;
+        *) F=yes ;;
+    esac
+    # the fake leg must NOT leak the real injected text
+    case "$Fk" in
+        *eagle*) F=yes ;;
+    esac
+
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"messages.read","mode":"grant"}' >/dev/null 2>&1
+    G=$(/usr/bin/oxctl messagesd list '{"app":"oxctl"}' 2>&1)
+    echo "DBG-STORE-GRANT $G"
+    case "$G" in
+        *'"synthetic":false'*) ;;
+        *) F=yes ;;
+    esac
+    case "$G" in
+        *'"dir":"in"'*) ;;
+        *) F=yes ;;
+    esac
+    case "$G" in
+        *'+15550042'*) ;;
+        *) F=yes ;;
+    esac
+    case "$G" in
+        *'the eagle lands at dawn'*) ;;
+        *) F=yes ;;
+    esac
+
+    # restore deny (least privilege)
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"messages.read","mode":"deny"}' >/dev/null 2>&1
+
+    if [ "$F" = no ]; then
+        echo "OXMILESTONE name=messages-real-sms-ok"
+    else
+        echo "OXMILESTONE name=messages-store-failed"
+    fi
+    # kmsg marker for the walker-serialization wait in
+    # fake-providers-selftest (console echoes never reach dmesg).
+    echo "<6>selftest: messages-store-walker done" > /dev/kmsg 2>/dev/null
+    exec sleep infinity
+} > /dev/console 2>&1

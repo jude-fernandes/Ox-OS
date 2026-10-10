@@ -1,0 +1,38 @@
+#!/bin/sh
+# camera-app-selftest longrun: the Camera app's on-device lifecycle.
+# 1. install the signed camera.oxp package (the Camera dynamic tile
+#    appears through the packaging flow, bound camera.read=deny by the
+#    manifest-permission rule)
+# 2. wait for the app to be launched and REFUSED (gate taps the tile;
+#    the viewfinder frames fail with the bound deny)
+# 3. flip the user grant -> the app's viewfinder goes live
+{
+    i=0
+    while [ ! -S /run/ox/sockets/intentd.sock ] || [ ! -S /run/ox/sockets/permstored.sock ]; do
+        [ $i -ge 120 ] && break
+        sleep 1; i=$((i + 1))
+    done
+    if [ ! -S /run/ox/sockets/intentd.sock ] || [ ! -S /run/ox/sockets/permstored.sock ]; then
+        echo "OXMILESTONE name=camera-app-install-failed reason=no-sockets"
+        exec sleep infinity
+    fi
+
+    I=$(/usr/bin/oxpkg install /usr/share/ox/packages/camera.oxp 2>&1)
+    echo "DBG-CAMERA-INSTALL $I"
+    case "$I" in
+        *ok*) echo "OXMILESTONE name=camera-app-installed" ;;
+        *) echo "OXMILESTONE name=camera-app-install-failed"; exec sleep infinity ;;
+    esac
+
+    # the gate launches the app; wait until it ran and was refused
+    # (bound deny), then consent on the user's behalf
+    i=0
+    while [ $i -lt 300 ]; do
+        /bin/dmesg 2>/dev/null | grep -q "name=camera-app-denied" && break
+        sleep 2; i=$((i + 1))
+    done
+    G=$(/usr/bin/oxctl permstored set '{"app":"ox-camera","permission":"camera.read","mode":"grant"}' 2>&1)
+    echo "DBG-CAMERA-GRANT $G"
+    echo "OXMILESTONE name=camera-app-granted"
+    exec sleep infinity
+} > /dev/console 2>&1

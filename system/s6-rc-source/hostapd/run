@@ -1,0 +1,5 @@
+#!/bin/sh
+# hostapd longrun: the virtual AP on hwsim radio 1 (wlan1). Console
+# redirect so association events (AP-STA-*) are radio-side evidence
+# any gate can grep; -d lifts MSG_INFO above the default level.
+exec /usr/bin/hostapd -d /etc/hostapd.conf > /dev/console 2>&1

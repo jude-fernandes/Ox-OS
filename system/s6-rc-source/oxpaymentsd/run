@@ -1,0 +1,10 @@
+#!/bin/sh
+# oxpaymentsd longrun: payment terminal daemon. No-op (sleep) until its
+# guest binary ships (Phase 6 NFC/eSE backends implement the same contract).
+if [ -x /usr/bin/oxpaymentsd ]; then
+    /usr/bin/oxpaymentsd
+    RC=$?
+    echo "<6>paymentsd: exited rc=$RC" > /dev/kmsg 2>/dev/null || true
+    exit "$RC"
+fi
+exec sleep infinity

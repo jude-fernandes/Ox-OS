@@ -1,0 +1,11 @@
+#!/bin/sh
+# ox-status longrun: draws the status screen via oxcom IPC, then parks.
+# No-op (sleep) when the guest binary is absent so the DB still works
+# on binary-less builds.
+if [ -x /usr/bin/ox-status ]; then
+    /usr/bin/ox-status
+    RC=$?
+    echo "<6>ox-status: exited rc=$RC" > /dev/kmsg 2>/dev/null || true
+    exit "$RC"
+fi
+exec sleep infinity

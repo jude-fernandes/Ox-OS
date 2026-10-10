@@ -1,0 +1,10 @@
+[package]
+name = "notifd"
+version = "0.1.0"
+edition = "2021"
+description = "Ox OS notification daemon: permission-checked posts, banner window via ox-ui"
+
+[dependencies]
+ox-ipc = { workspace = true }
+ox-ui = { workspace = true }
+serde_json = { workspace = true }

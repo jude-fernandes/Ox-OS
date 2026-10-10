@@ -1,0 +1,30 @@
+#!/bin/sh
+# switcher-selftest longrun: captures compositor scene dumps at the
+# two switcher moments for the gate's artifacts. Watches kmsg:
+#   shell-switcher-open   -> /data/ox/artifacts/switcher-open.ppm
+#   shell-switcher-refresh (after a card close)
+#                         -> /data/ox/artifacts/switcher-closed.ppm
+# Waits for the UI unlock first (the switcher only exists unlocked).
+{
+    mkdir -p /data/ox/artifacts
+    until dmesg 2>/dev/null | grep -q "name=shell-unlocked"; do
+        sleep 1
+    done
+    # first switcher open
+    until dmesg 2>/dev/null | grep -q "name=shell-switcher-open"; do
+        sleep 1
+    done
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"screen.read","mode":"grant"}' >/dev/null 2>&1
+    D=$(/usr/bin/oxctl oxcom screendump '{"path":"/data/ox/artifacts/switcher-open.ppm"}' 2>&1)
+    echo "DBG-SW-DUMP-OPEN $D"
+    /bin/sync
+    # after the first card close (the shell refetches + redraws)
+    until dmesg 2>/dev/null | grep -q "name=shell-switcher-refresh"; do
+        sleep 1
+    done
+    D=$(/usr/bin/oxctl oxcom screendump '{"path":"/data/ox/artifacts/switcher-closed.ppm"}' 2>&1)
+    echo "DBG-SW-DUMP-CLOSED $D"
+    /bin/sync
+    echo "OXMILESTONE name=switcher-selftest-done"
+    exec sleep infinity
+} > /dev/console 2>&1

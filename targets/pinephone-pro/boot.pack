@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# PinePhone Pro: package Ox OS payload for U-Boot.
+# Produces BOTH boot paths:
+#   1) ox.itb            — FIT image (bootm), multi-DTB capable
+#   2) raw triple        — Image + dtb + initramfs for U-Boot `booti`
+# Usage: boot.pack <Image> <initramfs.cpio.gz> <dtb> [outdir]
+# Signing (chunk 72): set OX_FIT_KEY_DIR (+ optional OX_FIT_KEY_HINT,
+# OX_FIT_KEY_DTB) to sign every configuration (sha256,rsa2048, required)
+# and inject the public key into the U-Boot control DTB.
+set -eu
+SELF="$(cd "$(dirname "$0")" && pwd)"
+. "$SELF/target.env"
+TOOL="$SELF/../../tools/ox-mkfit.py"
+K="$1"; R="$2"; D="$3"; OUT="${4:-.}"
+mkdir -p "$OUT"
+
+SIGN_ARGS=(--key-dir "${OX_FIT_KEY_DIR:-$SELF/../../tools/dev-keys}" --key-hint "${OX_FIT_KEY_HINT:-fit-dev}")
+[ -n "${OX_FIT_KEY_DTB:-}" ] && SIGN_ARGS+=(--key-dtb "$OX_FIT_KEY_DTB")
+
+# OX_FIT_GZIP=1: embed the kernel gzipped (the arm64 defconfig Image is
+# ~65MB — over the 64M boot partition raw; U-Boot bootm decompresses a
+# compression=gzip FIT node natively). The RAW Image still ships in the
+# triple for the booti path. (Also fixes the old mislabel: the ITS said
+# "gzip" while embedding raw bytes.)
+K_FIT="$K"; KCOMP=none
+if [ "${OX_FIT_GZIP:-0}" = "1" ]; then
+    gzip -9c "$K" > "$OUT/.ox-kernel.gz"
+    K_FIT="$OUT/.ox-kernel.gz"
+    KCOMP=gzip
+fi
+
+python3 "$TOOL" --kernel "$K_FIT" --ramdisk "$R" --dtb "$D" \
+    --load-addr "$OX_FIT_LOAD_ADDR" --entry-addr "$OX_FIT_ENTRY_ADDR" \
+    --compression "$KCOMP" \
+    --description "Ox OS pinephone-pro" \
+    "${SIGN_ARGS[@]}" \
+    -o "$OUT/ox.itb"
+rm -f "$OUT/.ox-kernel.gz"
+
+cp -f "$K" "$OUT/Image"
+cp -f "$D" "$OUT/rk3399.dtb"
+cp -f "$R" "$OUT/initramfs.cpio.gz"
+sha256sum "$OUT"/Image "$OUT"/rk3399.dtb "$OUT"/initramfs.cpio.gz \
+    >"$OUT/boot.sha256"
+
+cat >"$OUT/boot.txt" <<EOF
+# U-Boot commands (serial console)
+# FIT path:
+fatload mmc 1 \${kernel_addr_r} ox.itb && bootm \${kernel_addr_r}
+# raw path:
+fatload mmc 1 \${kernel_addr_r} Image; fatload mmc 1 \${fdt_addr_r} rk3399.dtb; fatload mmc 1 \${ramdisk_addr_r} initramfs.cpio.gz; booti \${kernel_addr_r} \${ramdisk_addr_r}:\${filesize} \${fdt_addr_r}
+EOF
+
+echo "artifacts in $OUT: ox.itb + raw triple + boot.txt (u-boot cmds)"

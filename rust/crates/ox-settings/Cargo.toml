@@ -1,0 +1,10 @@
+[package]
+name = "ox-settings"
+version = "0.1.0"
+edition = "2021"
+description = "Ox OS Settings app: first app on the intentd app model, drawn via ox-ui"
+
+[dependencies]
+ox-ipc = { workspace = true }
+ox-ui = { workspace = true }
+serde_json = { workspace = true }

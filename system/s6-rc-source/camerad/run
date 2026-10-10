@@ -1,0 +1,7 @@
+#!/bin/sh
+# camerad longrun: the camera service — owns the V4L2 sensor (vivid,
+# the virtual test sensor, on the virtual target) and serves
+# permstored-gated captures (deny/fake/grant). If the sensor is
+# absent (boots without the modules) each capture fails honestly per
+# request; the daemon itself stays up (no-flap rule).
+exec /usr/bin/ox-camerad

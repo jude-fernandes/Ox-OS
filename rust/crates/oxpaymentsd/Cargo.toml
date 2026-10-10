@@ -1,0 +1,11 @@
+[package]
+name = "oxpaymentsd"
+version = "0.1.0"
+edition = "2021"
+description = "Ox OS payment daemon (Phase 2 scaffold: transaction state machine + IPC; NFC stack lands in Phase 6)"
+
+[dependencies]
+ox-ipc = { workspace = true }
+ox-pay-proto = { path = "../ox-pay-proto" }
+serde = { workspace = true }
+serde_json = { workspace = true }

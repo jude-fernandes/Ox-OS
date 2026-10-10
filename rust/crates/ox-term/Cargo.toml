@@ -1,0 +1,10 @@
+[package]
+name = "ox-term"
+version = "0.1.0"
+edition = "2021"
+description = "Ox OS Terminal app: keyboard-driven shell runner on the intentd app model"
+
+[dependencies]
+ox-ipc = { workspace = true }
+ox-ui = { workspace = true }
+serde_json = { workspace = true }

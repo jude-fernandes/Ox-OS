@@ -1,0 +1,129 @@
+#!/bin/sh
+# usb-selftest longrun: the quarantine + permission lifecycle.
+# 1. the gate hot-plugs a USB stick (QEMU HMP device_add)
+# 2. usbd must journal usb-added + usb-quarantined, and the kernel
+#    must have NO block device for it (drivers unbound)
+# 3. usb.read matrix: deny refused / fake synthetic (no leak) /
+#    grant = real list with authorized:false
+# 4. authorize (the system "allow" tap) -> the block device APPEARS
+# Restores nothing (the device is unplugged by the gate afterwards).
+{
+    echo "DBG-USB-SELFTEST-START pid=$$"
+    sleep 8
+    i=0
+    while [ ! -S /run/ox/sockets/usbd.sock ] || [ ! -S /run/ox/sockets/permstored.sock ]; do
+        [ $i -ge 120 ] && break
+        sleep 1; i=$((i + 1))
+    done
+    if [ ! -S /run/ox/sockets/usbd.sock ] || [ ! -S /run/ox/sockets/permstored.sock ]; then
+        echo "OXMILESTONE name=usb-test-failed reason=no-sockets"
+        exec sleep infinity
+    fi
+    echo "DBG-USB-SELFTEST-SOCKETS-OK"
+
+    # plug-time safety is KERNEL policy: the cmdline must carry the
+    # unauthorized default (chunk 46 — closes the enumeration race)
+    if grep -aq 'usbcore.authorized_default=0' /proc/cmdline; then
+        echo "OXMILESTONE name=usb-default-unauthorized"
+    else
+        echo "OXMILESTONE name=usb-test-failed reason=no-cmdline-default"
+        exec sleep infinity
+    fi
+
+    # wait for the gate's hot-plug + the daemon's quarantine
+    echo "DBG-USB-SELFTEST-WAITING-QUARANTINE"
+    i=0
+    while [ $i -lt 150 ]; do
+        /bin/dmesg 2>/dev/null | grep -q "name=usb-quarantined" && break
+        sleep 2; i=$((i + 1))
+    done
+    echo "DBG-USB-SELFTEST-DMESG-TAIL"
+    /bin/dmesg 2>/dev/null | grep -a 'name=usb' | tail -3
+    /bin/dmesg 2>/dev/null | grep -q "name=usb-quarantined" \
+        || { echo "OXMILESTONE name=usb-test-failed reason=no-quarantine"; exec sleep infinity; }
+    sleep 3
+    if ls /dev/sd[a-z] >/dev/null 2>&1; then
+        echo "OXMILESTONE name=usb-test-failed reason=quarantine-leak"
+        exec sleep infinity
+    fi
+    echo "OXMILESTONE name=usb-quarantine-no-blockdev"
+
+    # chunk 57: hold the authorize until the GUEST clock has advanced
+    # 420s past quarantine. The gate's no-blockdev assertion is bounded
+    # by 360 guest-seconds of wait budget, so this grace provably
+    # sequences the system-tap authorize AFTER the gate's quarantine
+    # proof — regardless of host speed. (The old free-running authorize
+    # raced the gate's assert and failed sweeps.)
+    T0=$(cut -d' ' -f1 /proc/uptime)
+    while :; do
+        T=$(cut -d' ' -f1 /proc/uptime)
+        [ $(( ${T0%.*} )) -ge 0 ] || break
+        D=$(( ${T%.*} - ${T0%.*} ))
+        [ "$D" -ge 420 ] && break
+        sleep 5
+    done
+
+    D() {
+        /usr/bin/oxctl usbd devices '{"app":"oxctl"}' 2>&1
+    }
+
+    # DENY
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"usb.read","mode":"deny"}' >/dev/null 2>&1
+    R=$(/usr/bin/oxctl usbd devices '{"app":"oxctl"}' 2>&1)
+    echo "DBG-USB-DENY $R"
+    case "$R" in
+        *denied*|*DENIED*) echo "OXMILESTONE name=usb-denied-refused" ;;
+        *) echo "OXMILESTONE name=usb-test-failed reason=deny-leak"; exec sleep infinity ;;
+    esac
+
+    # FAKE: synthetic list, the real stick identity must not leak
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"usb.read","mode":"fake"}' >/dev/null 2>&1
+    F=$(D)
+    echo "DBG-USB-FAKE $F"
+    case "$F" in
+        *'"synthetic":true'*) ;;
+        *) echo "OXMILESTONE name=usb-test-failed reason=fake-not-synthetic"; exec sleep infinity ;;
+    esac
+    case "$F" in
+        *HARDDRIVE*) echo "OXMILESTONE name=usb-test-failed reason=fake-leak"; exec sleep infinity ;;
+    esac
+    echo "OXMILESTONE name=usb-fake-synthetic"
+
+    # GRANT: the real list, quarantined device included
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"usb.read","mode":"grant"}' >/dev/null 2>&1
+    G=$(D)
+    echo "DBG-USB-GRANT $G"
+    case "$G" in
+        *'"synthetic":false'*) ;;
+        *) echo "OXMILESTONE name=usb-test-failed reason=grant-synthetic"; exec sleep infinity ;;
+    esac
+    case "$G" in
+        *'"authorized":false'*) ;;
+        *) echo "OXMILESTONE name=usb-test-failed reason=grant-state"; exec sleep infinity ;;
+    esac
+    echo "OXMILESTONE name=usb-list-real"
+
+    # authorize: the system "allow" tap -> drivers bind -> block device.
+    # Derive the dev id from the GRANTED-LIST response (chunk 63), NOT
+    # from dmesg: under sweep load the kernel ring wraps and the
+    # usb-added line is gone by authorize time — the empty id made
+    # authorize a no-op (the 2026-09-30 sweep failure, twice). The
+    # granted list is usbd's own truth, seconds old, and already in hand.
+    DEV=$(printf "%s" "$G" | grep -o '"dev":"[0-9.-]*"' | head -1 | cut -d'"' -f4)
+    echo "DBG-USB-AUTH-DEV $DEV"
+    [ -n "$DEV" ] || { echo "OXMILESTONE name=usb-test-failed reason=no-dev"; exec sleep infinity; }
+    A=$(/usr/bin/oxctl usbd authorize "{\"dev\":\"$DEV\",\"allow\":true}" 2>&1)
+    echo "DBG-USB-AUTH $A"
+    case "$A" in
+        *'"authorized":true'*) ;;
+        *) echo "OXMILESTONE name=usb-test-failed reason=authorize-failed"; exec sleep infinity ;;
+    esac
+    i=0
+    while :; do
+        if ls /dev/sd[a-z] >/dev/null 2>&1; then break; fi
+        [ $i -ge 60 ] && { echo "OXMILESTONE name=usb-test-failed reason=no-blockdev"; exec sleep infinity; }
+        sleep 1; i=$((i + 1))
+    done
+    echo "OXMILESTONE name=usb-authorized-blockdev dev=$DEV"
+    exec sleep infinity
+} > /dev/console 2>&1

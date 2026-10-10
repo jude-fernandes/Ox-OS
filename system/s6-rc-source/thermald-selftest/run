@@ -1,0 +1,45 @@
+#!/bin/sh
+# thermald-selftest longrun: drive the temperature source through the
+# three policy tiers and verify each escalation over IPC. Event-driven
+# (polls state after each step) — no wall-clock assumptions.
+{
+    sleep 8
+    i=0
+    while [ ! -S /run/ox/sockets/thermald.sock ] && [ $i -lt 30 ]; do
+        sleep 1; i=$((i + 1))
+    done
+    if [ ! -S /run/ox/sockets/thermald.sock ]; then
+        echo "OXMILESTONE name=thermald-tier-failed"
+        exec sleep infinity
+    fi
+    /usr/bin/oxctl powerd wake-lock '{"id":"therm-drill"}' 2>/dev/null || true
+    # tighten thresholds so the drill stays in comfortable temps
+    /usr/bin/oxctl thermald config '{"warn_mc":40000,"hot_mc":50000,"critical_mc":60000}' 2>&1 | tail -1
+    mkdir -p /tmp/ox-thermal
+    TEMP=/tmp/ox-thermal/temp
+    state_of() {
+        /usr/bin/oxctl thermald status 2>/dev/null | sed -n 's/.*"state":\([0-9]*\).*/\1/p'
+    }
+    OK=yes
+    set_temp() { printf '%s' "$1" > "$TEMP" 2>/dev/null || OK=no; }
+    wait_state() {
+        want=$1
+        i=0
+        while [ "$(state_of)" != "$want" ] && [ $i -lt 60 ]; do
+            sleep 1; i=$((i + 1))
+        done
+        [ "$(state_of)" = "$want" ] || OK=no
+        echo "DBG-THERM state=$(state_of) want=$want"
+    }
+    set_temp 42000; wait_state 1
+    set_temp 52000; wait_state 2
+    set_temp 62000; wait_state 3
+    rm -f "$TEMP"
+    /usr/bin/oxctl powerd wake-lock '{"id":"therm-drill","release":true}' 2>/dev/null || true
+    if [ "$OK" = yes ]; then
+        echo "OXMILESTONE name=thermald-tier-ok"
+    else
+        echo "OXMILESTONE name=thermald-tier-failed"
+    fi
+    exec sleep infinity
+} > /dev/console 2>&1

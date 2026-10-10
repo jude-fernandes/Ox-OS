@@ -1,0 +1,10 @@
+[package]
+name = "ox-shell"
+version = "0.1.0"
+edition = "2021"
+description = "Ox OS shell: home screen app with tappable launch tiles"
+
+[dependencies]
+ox-ipc = { workspace = true }
+ox-ui = { workspace = true }
+serde_json = { workspace = true }

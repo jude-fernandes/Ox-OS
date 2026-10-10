@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# ox-port <device-name> <soc> <header-version> [pagesize] — scaffold a new
+# Android-bootable target for Ox OS. Generates targets/<device>/ from the
+# canonical template with values substituted. Hardware work (DTB/panel/modem)
+# is tracked in the generated BRINGUP.md; nothing here claims a working port.
+set -eu
+cd "$(dirname "$0")/.."
+
+DEV="${1:?usage: ox-port <device> <soc> <header-version:0-4> [pagesize]}"
+SOC="${2:?missing soc}"
+HV="${3:?missing header-version}"
+PS="${4:-4096}"
+
+case "$HV" in 0|1|2|3|4) ;; *) echo "bad header-version"; exit 1;; esac
+T=targets/"$DEV"
+[ -e "$T" ] && { echo "$T exists"; exit 1; }
+mkdir -p "$T"
+
+cat >"$T/target.env" <<EOF
+OX_TARGET=$DEV
+OX_SOC='$SOC'
+OX_BOOT_HEADER_VERSION=$HV
+OX_BOOT_PAGESIZE=$PS
+OX_BOOT_BASE=0x10000000
+OX_BOOT_KERNEL_OFFSET=0x00080000
+OX_BOOT_RAMDISK_OFFSET=0x01000000
+OX_BOOT_TAGS_OFFSET=0x00000100
+OX_BOOT_DTB_OFFSET=0x01F00000
+OX_CMDLINE='console=ttyMSM0,115200n8 printk.devkmsg=on quiet'
+EOF
+[ "$HV" -ge 3 ] && echo 'OX_VENDOR_BOOT=1' >>"$T/target.env"
+chmod a+r "$T/target.env"
+
+cat >"$T/boot.pack" <<'BPEOF'
+#!/usr/bin/env bash
+# Package a built Ox payload into flashable Android boot image(s).
+# Usage: boot.pack <Image.gz> <initramfs.cpio.gz> <dtb> [outdir]
+set -eu
+SELF="$(cd "$(dirname "$0")" && pwd)"
+. "$SELF/target.env"
+TOOL="$SELF/../../tools/ox-mkbootimg.py"
+K="$1"; R="$2"; D="$3"; OUT="${4:-.}"
+mkdir -p "$OUT"
+ARGS="--kernel $K --ramdisk $R --board oxos --pagesize $OX_BOOT_PAGESIZE --base $OX_BOOT_BASE --kernel-offset $OX_BOOT_KERNEL_OFFSET --ramdisk-offset $OX_BOOT_RAMDISK_OFFSET --tags-offset $OX_BOOT_TAGS_OFFSET --dtb-offset $OX_BOOT_DTB_OFFSET --cmdline '$OX_CMDLINE' --header-version $OX_BOOT_HEADER_VERSION"
+if [ "${OX_VENDOR_BOOT:-}" = 1 ]; then
+    eval "python3 \"$TOOL\" $ARGS --dtb \"$D\" --vendor-boot '$OUT/vendor_boot.img' -o '$OUT/boot.img'"
+else
+    eval "python3 \"$TOOL\" $ARGS --dtb \"$D\" -o '$OUT/boot.img'"
+fi
+python3 "$TOOL" -o "$OUT/boot.img" --verify
+echo "flash: fastboot flash boot ${OUT#/}/boot.img"
+[ -f "$OUT/vendor_boot.img" ] &&
+    echo "       fastboot flash vendor_boot ${OUT#/}/vendor_boot.img"
+BPEOF
+chmod a+rx "$T/boot.pack"
+
+sed -e "s/@DEVICE@/$DEV/g" -e "s/@SOC@/$SOC/g" \
+    targets/_template-android/BRINGUP.md.tmpl >"$T/BRINGUP.md"
+cp targets/_template-android/kernel.fragment.tmpl "$T/kernel.fragment"
+cp targets/_template-android/firmware.manifest "$T/firmware.manifest"
+
+echo "scaffolded $T — fill kernel.fragment + BRINGUP milestones, then:"
+echo "  $T/boot.pack Image.gz ox-initramfs.img dtb.img out/"

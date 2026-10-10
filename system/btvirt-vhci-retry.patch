@@ -1,0 +1,62 @@
+--- a/emulator/vhci.c	2026-09-09 09:33:36.134216300 +0100
++++ b/emulator/vhci.c	2026-09-09 13:11:47.764216300 +0100
+@@ -105,11 +105,12 @@
+ 	struct vhci_create_req req;
+ 	struct vhci_create_rsp rsp;
+ 	int fd;
++	unsigned int tries;
+ 
+-	fd = open("/dev/vhci", O_RDWR | O_NONBLOCK);
+-	if (fd < 0)
+-		return NULL;
+-
++	/* The kernel auto-creates a controller 1s after open(2) when no
++	 * vendor packet was written; a preempted writer then loses the
++	 * device with EBADFD forever. Retry the whole handshake: each
++	 * close(2) of a failed attempt unregisters what was created. */
+ 	memset(&req, 0, sizeof(req));
+ 	req.pkt_type = HCI_VENDOR_PKT;
+ 
+@@ -122,19 +123,32 @@
+ 		break;
+ 	}
+ 
+-	if (write(fd, &req, sizeof(req)) != sizeof(req)) {
+-		close(fd);
+-		return NULL;
++	fd = -1;
++	for (tries = 0; tries < 30; tries++) {
++		fd = open("/dev/vhci", O_RDWR | O_NONBLOCK);
++		if (fd >= 0) {
++			if (write(fd, &req, sizeof(req)) == (ssize_t) sizeof(req)) {
++				memset(&rsp, 0, sizeof(rsp));
++				if (read(fd, &rsp, sizeof(rsp)) == (ssize_t) sizeof(rsp) &&
++						rsp.pkt_type == HCI_VENDOR_PKT &&
++						rsp.opcode == req.opcode) {
++					fprintf(stderr, "vhci attach ok on try %u\n", tries);
++					break;
++				}
++				fprintf(stderr, "vhci attach try %u: bad reply\n", tries);
++			} else {
++				fprintf(stderr, "vhci attach try %u: write errno=%d\n", tries, errno);
++			}
++			close(fd);
++			fd = -1;
++		} else {
++			fprintf(stderr, "vhci attach try %u: open errno=%d\n", tries, errno);
++		}
++		sleep(1);
+ 	}
+ 
+-	memset(&rsp, 0, sizeof(rsp));
+-
+-	if (read(fd, &rsp, sizeof(rsp)) != sizeof(rsp) ||
+-			rsp.pkt_type != HCI_VENDOR_PKT ||
+-			rsp.opcode != req.opcode) {
+-		close(fd);
++	if (fd < 0)
+ 		return NULL;
+-	}
+ 
+ 	vhci = malloc(sizeof(*vhci));
+ 	if (!vhci) {

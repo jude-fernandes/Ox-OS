@@ -1,0 +1,37 @@
+#!/bin/sh
+# shield-selftest longrun (chunk 59): launch an app WHILE THE DEVICE IS
+# LOCKED — the exact condition that let a Hello window cover the lock
+# pad and eat PIN taps (chunk-58 rollout). With the lock-shield secure
+# tier the app's window lands BELOW the shell; the gate's taps + oxcom's
+# lock-shield-kept journal prove the pad still receives everything.
+{
+    echo "DBG-SHIELD-SELFTEST-START pid=$$"
+    i=0
+    while [ $i -lt 150 ]; do
+        /bin/dmesg 2>/dev/null | grep -q "name=lock-shield id=[0-9]* on=true" && break
+        sleep 2; i=$((i + 1))
+    done
+    /bin/dmesg 2>/dev/null | grep -q "name=lock-shield id=[0-9]* on=true" || {
+        echo "OXMILESTONE name=shield-selftest-failed reason=no-shield"
+        exec sleep infinity
+    }
+    # Hello is packaged by pkg-selftest, which can run well after this
+    # selftest boots (boot-order variance). Retry until packaged — the
+    # start op is idempotent while the app runs, so it does not matter
+    # who lands the first successful start.
+    R=""
+    i=0
+    while [ $i -lt 90 ]; do
+        R=$(/usr/bin/oxctl intentd start '{"app":"Hello"}' 2>&1)
+        case "$R" in
+            *'"pid":'*) break ;;
+        esac
+        sleep 5; i=$((i + 1))
+    done
+    echo "DBG-SHIELD-SELFTEST-LAUNCH $R"
+    case "$R" in
+        *'"pid":'*) echo "OXMILESTONE name=shield-probe-launched" ;;
+        *) echo "OXMILESTONE name=shield-selftest-failed reason=never-packaged"; exec sleep infinity ;;
+    esac
+    exec sleep infinity
+} > /dev/console 2>&1

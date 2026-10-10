@@ -1,0 +1,10 @@
+[package]
+name = "ox-files"
+version = "0.1.0"
+edition = "2021"
+description = "Ox OS Files app: offline file browser on the intentd app model, drawn via ox-ui"
+
+[dependencies]
+ox-ipc = { workspace = true }
+ox-ui = { workspace = true }
+serde_json = { workspace = true }

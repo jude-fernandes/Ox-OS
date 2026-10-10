@@ -1,0 +1,87 @@
+#!/bin/sh
+# fake-providers-selftest longrun: the honest-permission lifecycle for
+# the two NEW fake-data services (contacts.test already walks contactsd
+# in contacts-selftest):
+#   location.read + messages.read, walked through the oxctl caller:
+#     deny  -> refused
+#     fake  -> synthetic data served (synthetic:true)
+#     grant -> real store served (synthetic:false; location on a
+#              GNSS-less device answers honestly "no fix")
+# Then restore deny (least privilege).
+# Chunk-41 rule, restored for the post-68 world: the consult keys on
+# the CALLER's kernel comm (oxctl for every selftest) — the payload
+# app is display-only — so concurrent walkers would flip each other's
+# modes on the shared rows. The other walkers of these exact rows are
+# messages-store-selftest (messages.read) and gnss-selftest
+# (location.read): wait for each walker's conclusion before walking
+# its row. Their restore-deny fires immediately at their milestone and
+# this poll's 2s granularity cannot overtake it.
+{
+    sleep 8
+    i=0
+    while [ ! -S /run/ox/sockets/locationd.sock ] || [ ! -S /run/ox/sockets/messagesd.sock ] || [ ! -S /run/ox/sockets/permstored.sock ]; do
+        [ $i -ge 120 ] && break
+        sleep 1; i=$((i + 1))
+    done
+    if [ ! -S /run/ox/sockets/locationd.sock ] || [ ! -S /run/ox/sockets/messagesd.sock ] || [ ! -S /run/ox/sockets/permstored.sock ]; then
+        echo "OXMILESTONE name=fake-providers-test-failed"
+        exec sleep infinity
+    fi
+
+    # other (oxctl x messages.read) walker: messages-store-selftest.
+    # It journals a kmsg completion marker ("messages-store-walker
+    # done") — its verdict milestones are console echoes and never
+    # reach dmesg, so the marker is the only waitable channel.
+    i=0
+    while [ $i -lt 900 ]; do
+        /bin/dmesg 2>/dev/null | grep -q "messages-store-walker done" && break
+        sleep 2; i=$((i + 1))
+    done
+    # other (oxctl x location.read) walker: gnss-selftest (same marker
+    # scheme; fires on ok, failed, skipped AND the no-sockets exit).
+    i=0
+    while [ $i -lt 900 ]; do
+        /bin/dmesg 2>/dev/null | grep -q "gnss-walker done" && break
+        sleep 2; i=$((i + 1))
+    done
+
+    # --- locationd: deny / fake / grant ---
+    FLOC=no
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"location.read","mode":"deny"}' >/dev/null 2>&1
+    D=$(/usr/bin/oxctl locationd fix '{"app":"oxctl"}' 2>&1)
+    echo "DBG-LOC-DENY $D"
+    case "$D" in *denied*|*DENIED*) ;; *) FLOC=yes ;; esac
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"location.read","mode":"fake"}' >/dev/null 2>&1
+    F=$(/usr/bin/oxctl locationd fix '{"app":"oxctl"}' 2>&1)
+    echo "DBG-LOC-FAKE $F"
+    case "$F" in *'"synthetic":true'*) ;; *) FLOC=yes ;; esac
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"location.read","mode":"grant"}' >/dev/null 2>&1
+    G=$(/usr/bin/oxctl locationd fix '{"app":"oxctl"}' 2>&1)
+    echo "DBG-LOC-GRANT $G"
+    # fresh device: no GNSS fix yet — grant must answer "no fix"
+    # honestly (fix:null, synthetic:false), never a made-up coordinate
+    case "$G" in *'"synthetic":false'*) ;; *) FLOC=yes ;; esac
+
+    # --- messagesd: deny / fake / grant ---
+    FMSG=no
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"messages.read","mode":"deny"}' >/dev/null 2>&1
+    D=$(/usr/bin/oxctl messagesd list '{"app":"oxctl"}' 2>&1)
+    echo "DBG-MSG-DENY $D"
+    case "$D" in *denied*|*DENIED*) ;; *) FMSG=yes ;; esac
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"messages.read","mode":"fake"}' >/dev/null 2>&1
+    F=$(/usr/bin/oxctl messagesd list '{"app":"oxctl"}' 2>&1)
+    echo "DBG-MSG-FAKE $F"
+    case "$F" in *'"synthetic":true'*) ;; *) FMSG=yes ;; esac
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"messages.read","mode":"grant"}' >/dev/null 2>&1
+    G=$(/usr/bin/oxctl messagesd list '{"app":"oxctl"}' 2>&1)
+    echo "DBG-MSG-GRANT $G"
+    case "$G" in *'"synthetic":false'*) ;; *) FMSG=yes ;; esac
+
+    # restore deny (least privilege) on both
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"location.read","mode":"deny"}' >/dev/null 2>&1
+    /usr/bin/oxctl permstored set '{"app":"oxctl","permission":"messages.read","mode":"deny"}' >/dev/null 2>&1
+
+    [ "$FLOC" = no ] && echo "OXMILESTONE name=location-test-ok" || echo "OXMILESTONE name=location-test-failed"
+    [ "$FMSG" = no ] && echo "OXMILESTONE name=messages-test-ok" || echo "OXMILESTONE name=messages-test-failed"
+    exec sleep infinity
+} > /dev/console 2>&1

@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = ["crates/ox-ipc", "crates/ox-ui", "crates/ox-pay-proto", "crates/oxcom", "crates/oxctl", "crates/oxpaymentsd", "crates/ox-shell", "crates/ox-files", "crates/ox-hello", "crates/ox-gnssd", "crates/ox-camerad", "crates/ox-camera", "crates/ox-dialer", "crates/ox-sms", "crates/ox-nfcd", "crates/ox-usbd", "crates/ox-intentd", "crates/ox-contactsd", "crates/oxwifid", "crates/ox-btair", "crates/ox-locationd", "crates/ox-messagesd", "crates/ox-lockd", "crates/ox-settings", "crates/ox-status", "crates/ox-term", "crates/oxpkg", "crates/inputd", "crates/notifd", "crates/permstored", "crates/powerd", "crates/oxmodemd", "crates/oxnetd", "crates/oxresourced", "crates/oxthermald"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ox-ipc = { path = "crates/ox-ipc" }
+ox-ui = { path = "crates/ox-ui" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.dev]
+opt-level = 1

@@ -1,0 +1,4 @@
+#!/bin/sh
+# oxwifid longrun: Wi-Fi service over the wpa_supplicant control
+# interface — scan/status with honest permission modes.
+exec /usr/bin/oxwifid
