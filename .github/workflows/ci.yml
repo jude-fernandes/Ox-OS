@@ -50,7 +50,10 @@ jobs:
 
       - name: Root-profile nix symlink (the gates hardcode this path)
         run: |
-          P=$(ls -d /nix/var/nix/profiles/per-user/*/profile 2>/dev/null | head -1)
+          P=$(ls -d /nix/var/nix/profiles/per-user/*/profile 2>/dev/null | grep -v '/per-user/root/profile$' | head -1)
+          if [ -z "$P" ]; then
+            P=/nix/var/nix/profiles/default
+          fi
           sudo mkdir -p /nix/var/nix/profiles/per-user/root
           sudo ln -sfn "$P" /nix/var/nix/profiles/per-user/root/profile
           "$NIX" --version
@@ -110,7 +113,10 @@ jobs:
 
       - name: Root-profile nix symlink
         run: |
-          P=$(ls -d /nix/var/nix/profiles/per-user/*/profile 2>/dev/null | head -1)
+          P=$(ls -d /nix/var/nix/profiles/per-user/*/profile 2>/dev/null | grep -v '/per-user/root/profile$' | head -1)
+          if [ -z "$P" ]; then
+            P=/nix/var/nix/profiles/default
+          fi
           sudo mkdir -p /nix/var/nix/profiles/per-user/root
           sudo ln -sfn "$P" /nix/var/nix/profiles/per-user/root/profile
           "$NIX" --version
